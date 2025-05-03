@@ -136,6 +136,12 @@ class PaymentRequest(BaseModel):
     description: str
 
 
+class BunqMeTabRequest(BaseModel):
+    amount: str
+    description: str
+    redirect_url: str = "https://bunq.com"
+
+
 # --------------------------------------------------------------------------- #
 # OpenAI helper
 # --------------------------------------------------------------------------- #
@@ -845,32 +851,35 @@ async def startup_event():
     logger.info("Started Marktplaats automation background task")
 
 
-async def create_bunq_payment(amount: str, recipient_email: str, description: str) -> dict:
+async def create_bunq_me_tab(amount: str, description: str, redirect_url: str = "https://bunq.com") -> dict:
     """
-    Create a payment using the bunq API.
+    Create a bunq.me payment link.
     
     Args:
         amount: The amount to pay in EUR (as a string, e.g. "1.00")
-        recipient_email: The email address of the recipient
         description: Description of the payment
+        redirect_url: URL to redirect to after payment (defaults to bunq.com)
         
     Returns:
-        dict: A dictionary containing payment details including payment_id and balance
+        dict: A dictionary containing the payment link details
         
     Raises:
-        HTTPException: If the payment creation fails
+        HTTPException: If the payment link creation fails
     """
     try:
-        # Get API key from environment
+        # Get configuration from environment
         api_key = os.getenv("BUNQ_API_KEY")
+        environment = os.getenv("BUNQ_ENVIRONMENT", "SANDBOX")
+        device_description = os.getenv("BUNQ_DEVICE_DESCRIPTION", "Auto Marketplace Payment")
+        
         if not api_key:
             raise HTTPException(status_code=500, detail="BUNQ_API_KEY not found in environment variables")
 
         # Create API context
         api_context = ApiContext.create(
-            ApiEnvironmentType.SANDBOX,
+            ApiEnvironmentType.SANDBOX if environment == "SANDBOX" else ApiEnvironmentType.PRODUCTION,
             api_key,
-            "Auto Marketplace Payment"
+            device_description
         )
         
         # Save the context for future use
@@ -879,53 +888,51 @@ async def create_bunq_payment(amount: str, recipient_email: str, description: st
         # Load the context into BunqContext
         BunqContext.load_api_context(api_context)
         
-        # Get the user context and primary account
-        user_context = BunqContext.user_context()
-        user_id = user_context.user_id
-        primary_account = user_context.primary_monetary_account
+        # Create the bunq.me tab entry
+        bunq_me_tab_entry = BunqMeTabEntryApiObject(
+            amount_inquired=AmountObject(amount, "EUR"),
+            description=description,
+            redirect_url=redirect_url
+        )
         
-        # Create the payment
-        payment_id = PaymentApiObject.create(
-            amount=AmountObject(amount, "EUR"),
-            counterparty_alias=PointerObject("EMAIL", recipient_email),
-            description=description
-        ).value
+        # Create the bunq.me tab
+        tab_id = BunqMeTabApiObject(bunqme_tab_entry=bunq_me_tab_entry).create(bunqme_tab_entry=bunq_me_tab_entry).value
         
-        # Get the current balance
-        balance = primary_account.balance.value
+        # Get the payment link
+        tab = BunqMeTabApiObject(bunqme_tab_entry=bunq_me_tab_entry).get(tab_id).value
         
-        logger.info(f"Created bunq payment with ID: {payment_id}")
+        logger.info(f"Created bunq.me payment link with ID: {tab_id}")
         return {
-            "payment_id": payment_id,
-            "user_id": user_id,
-            "account_id": primary_account.id_,
-            "balance": balance
+            "tab_id": tab_id,
+            "payment_url": tab.bunqme_tab_share_url,
+            "amount": amount,
+            "description": description
         }
         
     except Exception as e:
-        logger.error(f"Failed to create bunq payment: {traceback.format_exc()}")
+        logger.error(f"Failed to create bunq.me payment link: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/create-payment", response_model=dict)
-async def create_payment_endpoint(
-    payment_request: PaymentRequest,
+@app.post("/create-payment-link", response_model=dict)
+async def create_payment_link_endpoint(
+    payment_request: BunqMeTabRequest,
     token: str = Depends(verify_token)
 ):
     """
-    Create a payment using the bunq API.
+    Create a bunq.me payment link.
     
     Request body:
     {
         "amount": "1.00",
-        "recipient_email": "recipient@example.com",
-        "description": "Payment for services"
+        "description": "Payment for services",
+        "redirect_url": "https://bunq.com"  # optional
     }
     """
-    return await create_bunq_payment(
+    return await create_bunq_me_tab(
         amount=payment_request.amount,
-        recipient_email=payment_request.recipient_email,
-        description=payment_request.description
+        description=payment_request.description,
+        redirect_url=payment_request.redirect_url
     )
 
 
