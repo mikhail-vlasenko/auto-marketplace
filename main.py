@@ -10,7 +10,8 @@ from typing import List, Optional
 from dotenv import load_dotenv
 import httpx
 import redis.asyncio as redis
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Depends, Security
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 # Load environment variables from .env file
@@ -41,6 +42,7 @@ class Settings:
     MAX_TOKENS: int = int(os.getenv("MAX_TOKENS", "512"))
     TOP_P: float = float(os.getenv("TOP_P", "0.70"))
     TEMPERATURE: float = float(os.getenv("TEMPERATURE", "0.20"))
+    API_TOKEN: str = os.getenv("API_TOKEN", "")
 
 settings = Settings()
 logger.info("Loaded settings: %s", {k:v for k,v in settings.__dict__.items() if not k.startswith('_') and 'KEY' not in k.upper()})
@@ -49,6 +51,22 @@ redis_pool = redis.from_url(settings.REDIS_URL, decode_responses=False)
 logger.info("Connected to Redis at %s", settings.REDIS_URL)
 
 app = FastAPI(title="Chat‑Ad Backend", version="3.1.0")
+
+# --------------------------------------------------------------------------- #
+# Authentication
+# --------------------------------------------------------------------------- #
+security = HTTPBearer()
+
+async def verify_token(credentials: HTTPAuthorizationCredentials = Security(security)) -> str:
+    if not settings.API_TOKEN:
+        logger.error("API_TOKEN not set in environment variables")
+        raise HTTPException(status_code=500, detail="API token not configured")
+    
+    if credentials.credentials != settings.API_TOKEN:
+        logger.warning("Invalid API token provided")
+        raise HTTPException(status_code=401, detail="Invalid API token")
+    
+    return credentials.credentials
 
 # --------------------------------------------------------------------------- #
 # Models
@@ -156,7 +174,8 @@ async def _append_chat(uid: str, frm: str, txt: str):
 async def chat_message(
     user_id: str = Form(...),
     text: Optional[str] = Form(None),
-    images: Optional[List[UploadFile]] = File(None)
+    images: Optional[List[UploadFile]] = File(None),
+    token: str = Depends(verify_token)
 ):
     logger.info("Received chat message from user %s", user_id)
     if not text and not images:
