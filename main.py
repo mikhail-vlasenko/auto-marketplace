@@ -285,21 +285,27 @@ async def _post_listing(
             f"image{idx}": (f"img{idx}.jpg", img, "image/jpeg")
             for idx, img in enumerate(images)
         }
-        try:
-            logging.info(f"title: {title}")
-            logging.info(f"desc: {desc}")
-            logging.info(f"price: {price}")
-            # TODO: spec the postcode/delivery options etc etc (look at args of api_post...)
-            res = await api_post_order_with_login(title, desc, price, image_data=images)
-            if not res[0]:
-                logging.error("Main was not able to create post, for unknown reason :(")
-                raise
-            listing_id = res[1]
-            logger.info("Successfully posted listing with ID: %s", listing_id)
-            return listing_id
-        except Exception as e:
-            logger.error("Failed to post listing: %s", traceback.format_exc())
-            raise
+        for _ in range(3):
+            try:
+                logging.info(f"title: {title}")
+                logging.info(f"desc: {desc}")
+                logging.info(f"price: {price}")
+                # TODO: spec the postcode/delivery options etc etc (look at args of api_post...)
+                res = await api_post_order_with_login(
+                    title, desc, price, image_data=images
+                )
+                if not res[0]:
+                    logging.error(
+                        "Main was not able to create post, for unknown reason :("
+                    )
+                    raise
+                listing_id = res[1]
+                logger.info("Successfully posted listing with ID: %s", listing_id)
+                return listing_id
+            except Exception as e:
+                logger.error("Failed to post listing: %s", traceback.format_exc())
+                continue
+        raise
 
 
 # --------------------------------------------------------------------------- #
@@ -775,14 +781,17 @@ async def run_marktplaats_loop():
                                     if (
                                         "accept" in response.lower()
                                         or "agreed" in response.lower()
-                                        or "Ok" in response.lower()
-                                        or "Okay" in response.lower()
                                     ):
-                                        pass  # accepting stuff here TODO
-                                    # Generate a response using our negotiate_with_history function
-                                    resp = await negotiate_with_history(
-                                        chat["messages"], title=chat["title"]
-                                    )
+                                        resp = "Superb!"
+
+                                        # Do the thing...
+                                        # trigger_message_on_client(title=chat["title"])
+
+                                    else:
+                                        # Generate a response using our negotiate_with_history function
+                                        resp = await negotiate_with_history(
+                                            chat["messages"], title=chat["title"]
+                                        )
 
                                     if resp:  # Only send if we have a response
                                         logger.info(
