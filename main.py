@@ -869,13 +869,6 @@ async def run_marktplaats_loop():
         await asyncio.sleep(60)
 
 
-# Start the Marktplaats automation in a background task
-@app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(run_marktplaats_loop())
-    logger.info("Started Marktplaats automation background task")
-
-
 async def create_bunq_me_tab(amount: str, description: str, redirect_url: str = "https://bunq.com") -> dict:
     """
     Create a bunq.me payment link.
