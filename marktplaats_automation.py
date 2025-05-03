@@ -19,9 +19,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+HEADLESS = True
+FAKE_POSTING = False
+
 
 class MarktplaatsAutomation:
-    def __init__(self, headless: bool = False, slow_mo: int = 50):
+    def __init__(self, headless: bool = HEADLESS, slow_mo: int = 50):
         self.headless = headless
         self.slow_mo = slow_mo
 
@@ -82,6 +85,13 @@ class MarktplaatsAutomation:
         )
         if await modal_button.count() > 0:
             logger.info("Modal found, clicking 'Bedankt, ik snap het!' button")
+            await modal_button.click()
+            await self.page.wait_for_timeout(1500)
+        modal_button = self.page.locator(
+            'button.hz-Button.hz-Button--primary:has-text("Verder")'
+        )
+        if await modal_button.count() > 0:
+            logger.info("Modal found, clicking 'Verder' button")
             await modal_button.click()
             await self.page.wait_for_timeout(1500)
 
@@ -547,7 +557,8 @@ class MarktplaatsAutomation:
         postcode: str = "1234 AB",  # Postal code in Dutch format
         category: str = None,
         photos: List[str] = None,
-    ) -> bool:
+        image_data: List[bytes] = None,  # New parameter for image data as bytes
+    ) -> str:
         try:
             # Make sure we're on the main page
             await self.page.goto("https://www.marktplaats.nl/")
@@ -569,7 +580,7 @@ class MarktplaatsAutomation:
                 logger.warning(
                     "Could not find the 'Place advertisement' button. Are you logged in?"
                 )
-                return False
+                return False, ""
 
             # Click on the button to go to the ad creation page
             await place_ad_button.click()
@@ -580,21 +591,21 @@ class MarktplaatsAutomation:
             )
 
             if await business_seller_button.count() > 0:
-                print("Found business seller option, clicking it...")
+                logging.info("Found business seller option, clicking it...")
                 await business_seller_button.click()
 
             # Look for the title input field
             title_input = self.page.locator("input#category-keywords")
 
             if await title_input.count() > 0:
-                print(f"Found title input field, entering title: {title}")
+                logging.info(f"Found title input field, entering title: {title}")
                 await title_input.fill(title)
 
                 # Click the "Vind categorie" (Find category) button
                 find_category_button = self.page.locator("button#find-category")
 
                 if await find_category_button.count() > 0:
-                    print("Clicking 'Find category' button...")
+                    logging.info("Clicking 'Find category' button...")
                     await find_category_button.click()
 
                     # Wait a moment for the category to be found
@@ -606,27 +617,42 @@ class MarktplaatsAutomation:
                     )
 
                     if await continue_button.count() > 0:
-                        print("Clicking 'Continue' button...")
+                        logging.info("Clicking 'Continue' button...")
                         await continue_button.click()
 
-                        # Upload all images from the /images folder
-                        # If custom photos were provided, use those instead
+                        # Determine which image source to use
+                        # Priority: 1. image_data (bytes), 2. photos (paths), 3. images folder
                         image_paths = []
-                        if photos and len(photos) > 0:
-                            image_paths = photos
-                        else:
-                            # Get all jpg images from the images folder (using relative path)
-                            image_paths = sorted(
-                                glob.glob(f"{self.images_folder}/*.jpg")
+                        temp_image_paths = []  # To track any temporary files we create
+
+                        if image_data and len(image_data) > 0:
+                            # Use provided image data (bytes)
+                            import tempfile
+
+                            for i, img_bytes in enumerate(image_data):
+                                # Create a temporary file for each image
+                                fd, temp_path = tempfile.mkstemp(suffix=".jpg")
+                                with open(fd, "wb") as f:
+                                    f.write(img_bytes)
+                                temp_image_paths.append(temp_path)
+
+                            image_paths = temp_image_paths
+                            logging.info(
+                                f"Using {len(image_paths)} images from provided image data"
                             )
+                        elif photos and len(photos) > 0:
+                            # Use provided photo paths
+                            image_paths = photos
+                            logging.info(
+                                f"Using {len(image_paths)} images from provided paths"
+                            )
+                        else:
+                            logging.error(
+                                "No images are provided: I am too scared of getting banned by markplaats to allow this"
+                            )
+                            return False, ""
 
-                            if not image_paths:
-                                print(f"No images found in {self.images_folder}")
-                                image_paths = []
-
-                        print(
-                            f"Found {len(image_paths)} images to upload: {image_paths}"
-                        )
+                        logging.info(f"Found {len(image_paths)} images to upload")
 
                         # Find any file input that accepts images (jpg, jpeg, png)
                         # Note: We're using a more general selector to get ALL file inputs
@@ -640,17 +666,27 @@ class MarktplaatsAutomation:
                             if file_inputs_count > 0:
                                 # Always upload to the last input element
                                 last_input = file_inputs.last
-                                print(
-                                    f"Uploading image {i+1}/{len(image_paths)}: {image_path}"
+                                logging.info(
+                                    f"Uploading image {i+1}/{len(image_paths)}"
                                 )
                                 await last_input.set_input_files(image_path)
 
                                 # Wait for the upload to complete and for any UI changes
                                 await self.page.wait_for_timeout(2000)
-                                print(f"Image {i+1}/{len(image_paths)} uploaded")
+                                logging.info(f"Image {i+1}/{len(image_paths)} uploaded")
                             else:
-                                print(f"No file inputs found for image {i+1}")
+                                logging.info(f"No file inputs found for image {i+1}")
                                 break
+
+                        # Clean up temporary files if we created any
+                        for temp_path in temp_image_paths:
+                            try:
+                                os.unlink(temp_path)
+                                logging.info(f"Deleted temporary file: {temp_path}")
+                            except Exception as e:
+                                logging.warning(
+                                    f"Failed to delete temporary file {temp_path}: {str(e)}"
+                                )
 
                         # Now fill in the description in the TinyMCE editor
                         # TinyMCE is a bit tricky as it's in an iframe
@@ -664,44 +700,47 @@ class MarktplaatsAutomation:
                             editor_body = description_frame.locator("body#tinymce")
 
                             if await editor_body.count() > 0:
-                                print(
+                                logging.info(
                                     f"Found description editor, entering description: {description}"
                                 )
                                 # For TinyMCE, we need to use fill or type or html content
                                 await editor_body.fill(description)
-                                print("Description entered")
+                                logging.info("Description entered")
                             else:
-                                print(
+                                logging.info(
                                     "Could not find the editor body within the iframe"
                                 )
                         else:
-                            print("Description frame not found")
+                            logging.info("Description frame not found")
 
                         # Now select "Vraagprijs" from the price type dropdown
+                        await self.page.wait_for_timeout(1000)
                         price_type_select = self.page.locator(
                             'select[name="price.typeValue"]'
                         )
 
                         if await price_type_select.count() > 0:
-                            print("Found price type dropdown, selecting 'Vraagprijs'")
+                            logging.info(
+                                "Found price type dropdown, selecting 'Vraagprijs'"
+                            )
                             # Select "Vraagprijs" which should be value "FREE_BID"
-                            await price_type_select.select_option("FREE_BID")
-                            print("Selected 'Vraagprijs'")
+                            await price_type_select.select_option("Vraagprijs")
+                            logging.info("Selected 'Vraagprijs'")
 
                             # Now enter the price
                             price_input = self.page.locator('input[name="price.value"]')
 
                             if await price_input.count() > 0:
-                                print(
+                                logging.info(
                                     f"Found price input field, entering price: {price}"
                                 )
                                 # Convert float to string with comma as decimal separator
                                 price_str = str(price).replace(".", ",")
                                 await price_input.fill(price_str)
-                                print("Price entered")
+                                logging.info("Price entered")
 
                                 # Handle the delivery method selection
-                                print(f"Delivery option: {delivery_option}")
+                                logging.info(f"Delivery option: {delivery_option}")
 
                                 # Find the delivery method radio buttons
                                 if delivery_option.lower() == "from home":
@@ -710,11 +749,13 @@ class MarktplaatsAutomation:
                                         'input#Ophalen[name="deliveryMethod"]'
                                     )
                                     if await ophalen_radio.count() > 0:
-                                        print("Selecting 'Ophalen' (pick up) option")
+                                        logging.info(
+                                            "Selecting 'Ophalen' (pick up) option"
+                                        )
                                         await ophalen_radio.check()
-                                        print("Selected 'Ophalen'")
+                                        logging.info("Selected 'Ophalen'")
                                     else:
-                                        print(
+                                        logging.info(
                                             "Could not find the 'Ophalen' radio button"
                                         )
 
@@ -724,9 +765,11 @@ class MarktplaatsAutomation:
                                         'input#Verzenden[name="deliveryMethod"]'
                                     )
                                     if await verzenden_radio.count() > 0:
-                                        print("Selecting 'Verzenden' (shipping) option")
+                                        logging.info(
+                                            "Selecting 'Verzenden' (shipping) option"
+                                        )
                                         await verzenden_radio.check()
-                                        print("Selected 'Verzenden'")
+                                        logging.info("Selected 'Verzenden'")
 
                                         # Wait for package size options to appear
                                         await self.page.wait_for_timeout(1500)
@@ -746,23 +789,25 @@ class MarktplaatsAutomation:
                                             )
 
                                         if await size_radio.count() > 0:
-                                            print(
+                                            logging.info(
                                                 f"Selecting '{package_size}' package size"
                                             )
                                             await size_radio.check()
-                                            print(
+                                            logging.info(
                                                 f"Selected '{package_size}' package size"
                                             )
                                         else:
-                                            print(
+                                            logging.info(
                                                 f"Could not find the '{package_size}' package size radio button"
                                             )
                                     else:
-                                        print(
+                                        logging.info(
                                             "Could not find the 'Verzenden' radio button"
                                         )
                                 else:
-                                    print(f"Unknown delivery option: {delivery_option}")
+                                    logging.info(
+                                        f"Unknown delivery option: {delivery_option}"
+                                    )
 
                                 # Enter the postcode
                                 postcode_input = self.page.locator(
@@ -770,11 +815,15 @@ class MarktplaatsAutomation:
                                 )
 
                                 if await postcode_input.count() > 0:
-                                    print(f"Found postcode input, entering: {postcode}")
+                                    logging.info(
+                                        f"Found postcode input, entering: {postcode}"
+                                    )
                                     await postcode_input.fill(postcode)
-                                    print("Postcode entered")
+                                    logging.info("Postcode entered")
                                 else:
-                                    print("Could not find the postcode input field")
+                                    logging.info(
+                                        "Could not find the postcode input field"
+                                    )
 
                                 # Select the "Free" visibility option
                                 # First, look for the div with the free visibility option
@@ -783,13 +832,15 @@ class MarktplaatsAutomation:
                                 )
 
                                 if await free_option.count() > 0:
-                                    print(
+                                    logging.info(
                                         "Found 'Free' visibility option, clicking it..."
                                     )
                                     await free_option.click()
-                                    print("Selected 'Free' visibility option")
+                                    logging.info("Selected 'Free' visibility option")
                                 else:
-                                    print("Could not find the 'Free' visibility option")
+                                    logging.info(
+                                        "Could not find the 'Free' visibility option"
+                                    )
 
                                 # Click the "Naar betalen" (To payment) button to submit the form
                                 submit_button = self.page.locator(
@@ -797,33 +848,40 @@ class MarktplaatsAutomation:
                                 )
 
                                 if await submit_button.count() > 0:
-                                    print("Found 'Naar betalen' button, clicking it...")
+                                    logging.info(
+                                        "Found 'Naar betalen' button, clicking it..."
+                                    )
+                                    if FAKE_POSTING:
+                                        logging.warning("NOT DOING ANYTHING CUZ DEBUG")
+                                        return True, "some random url"
                                     await self.page.wait_for_timeout(1500)
                                     await submit_button.click()
-                                    print("Ad submitted successfully!")
-                                    return True
+                                    logging.info("Ad submitted successfully!")
+                                    return True, self.page.url
                                 else:
-                                    print("Could not find the 'Naar betalen' button")
+                                    logging.error(
+                                        "Could not find the 'Naar betalen' button"
+                                    )
                             else:
-                                print("Could not find the price input field")
+                                logging.error("Could not find the price input field")
                         else:
-                            print("Could not find the price type dropdown")
+                            logging.error("Could not find the price type dropdown")
                     else:
-                        print("Could not find the 'Continue' button")
+                        logging.error("Could not find the 'Continue' button")
                 else:
-                    print("Could not find the 'Find category' button")
+                    logging.error("Could not find the 'Find category' button")
             else:
-                print("Could not find the title input field")
+                logging.error("Could not find the title input field")
 
             # Return False if we couldn't complete the process
-            return False
+            return False, ""
 
         except Exception as e:
-            print(f"Error creating post: {str(e)}")
-            return False
+            logging.error(f"Error creating post: {str(e)}")
+            return False, ""
 
 
-async def make_post_sequence(automation):
+async def make_post_sequence(automation, image_data=None):
     sample_title = "Schattige Eenhoorn Knuffel met AWS Startups Shirt"
     sample_description = """Te koop: een superzachte en pluizige eenhoorn knuffel in uitstekende staat! Deze bijzondere eenhoorn draagt een donkerblauw "AWS Startups" T-shirt, wat het een perfect verzamelobject maakt voor techliefhebbers of een leuk cadeau voor jong en oud.
 
@@ -841,19 +899,46 @@ Perfect voor op je bureau, in de kinderkamer of als mascotte voor je startup!"""
     postcode = "1043 DR"  # Example Amsterdam postcode
 
     logger.info("Starting post creation sequence")
-    post_created = await automation.create_post(
-        title=sample_title,
-        description=sample_description,
-        price=sample_price,
-        delivery_option=delivery_option,
-        package_size=package_size,
-        postcode=postcode,
-    )
 
-    if post_created:
-        logger.info("Successfully created the advertisement")
-    else:
-        logger.error("Failed to create the advertisement")
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # Load environment variables from .env file in the script directory
+    load_dotenv(os.path.join(script_dir, ".env"))
+
+    # Get credentials from environment variables
+    username = os.environ.get("MARKTPLAATS_USERNAME")
+    password = os.environ.get("MARKTPLAATS_PASSWORD")
+
+    if not username or not password:
+        logger.error("Error: Missing credentials in .env file")
+        logger.error(
+            "Please create a .env file with MARKTPLAATS_USERNAME and MARKTPLAATS_PASSWORD"
+        )
+        return
+
+    async with MarktplaatsAutomation(headless=HEADLESS) as automation:
+        # Login to Marktplaats
+        logged_in = await automation.login(username, password)
+
+        if logged_in:
+            logger.info("Successfully logged in to Marktplaats")
+
+        # Use the image_data parameter if provided, otherwise pass None
+        ret = await automation.create_post(
+            title=sample_title,
+            description=sample_description,
+            price=sample_price,
+            delivery_option=delivery_option,
+            package_size=package_size,
+            postcode=postcode,
+            image_data=image_data,  # Pass the image data if provided
+        )
+
+        if ret[0]:
+            logger.info("Successfully created the advertisement")
+        else:
+            logger.error("Failed to create the advertisement")
+    return ret
 
 
 async def main():
@@ -875,7 +960,7 @@ async def main():
         )
         return
 
-    async with MarktplaatsAutomation(headless=True) as automation:
+    async with MarktplaatsAutomation(headless=HEADLESS) as automation:
         # Login to Marktplaats
         logged_in = await automation.login(username, password)
 
@@ -907,6 +992,57 @@ async def main():
 
         # Wait before closing the browser to see the results
         await asyncio.sleep(10)
+
+
+async def api_post_order_with_login(
+    title,
+    desc,
+    price,
+    *,
+    delivery="at home",
+    package_size="medium",
+    postcode="1043 DR",
+    image_data=None,
+):
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # Load environment variables from .env file in the script directory
+    load_dotenv(os.path.join(script_dir, ".env"))
+
+    # Get credentials from environment variables
+    username = os.environ.get("MARKTPLAATS_USERNAME")
+    password = os.environ.get("MARKTPLAATS_PASSWORD")
+
+    if not username or not password:
+        logger.error("Error: Missing credentials in .env file")
+        logger.error(
+            "Please create a .env file with MARKTPLAATS_USERNAME and MARKTPLAATS_PASSWORD"
+        )
+        return
+
+    async with MarktplaatsAutomation(headless=HEADLESS) as automation:
+        # Login to Marktplaats
+        logged_in = await automation.login(username, password)
+
+        if logged_in:
+            logger.info("Successfully logged in to Marktplaats")
+
+        # Use the image_data parameter if provided, otherwise pass None
+        ret = await automation.create_post(
+            title=title,
+            description=desc,
+            price=price,
+            delivery_option=delivery,
+            package_size=package_size,
+            postcode=postcode,
+            image_data=image_data,  # Pass the image data if provided
+        )
+
+        if ret[0]:
+            logger.info("Successfully created the advertisement")
+        else:
+            logger.error("Failed to create the advertisement")
+    return ret
 
 
 if __name__ == "__main__":

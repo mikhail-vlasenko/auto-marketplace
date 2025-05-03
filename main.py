@@ -18,7 +18,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pprint import pprint
-from marktplaats_automation import MarktplaatsAutomation
+from marktplaats_automation import MarktplaatsAutomation, api_post_order_with_login
 
 # Load environment variables from .env file
 load_dotenv()
@@ -257,10 +257,10 @@ async def _append_price_info_qa(
         )
 
 
-async def _estimate_price(title: str, desc: str) -> float:
+async def _estimate_price(title: str, desc: str, *, notes: str) -> float:
     """Estimate a fair market price for the item."""
     prompt = (
-        "You are a marketplace pricing expert. Based on the item details below, estimate a fair market price in EURO.\n"
+        "You are a marketplace pricing expert. Based on the item details below, estimate a fair market price in EURO. Also pay attention to user notes: 'notes'. \n"
         "Consider factors like condition, features, and market value.\n"
         "Respond with ONLY a number (no currency symbol or text).\n"
         f"\nTITLE: {title}\nDESCRIPTION: {desc}"
@@ -289,14 +289,12 @@ async def _post_listing(
             logging.info(f"title: {title}")
             logging.info(f"desc: {desc}")
             logging.info(f"price: {price}")
-            # r = await client.post(
-            #     settings.MARKETPLACE_API_URL,
-            #     data={"title":title, "description":desc, "price":price},
-            #     files=files
-            # )
-            # r.raise_for_status()
-            # listing_id = r.json().get("id", "")
-            listing_id = "1234567890"
+            # TODO: spec the postcode/delivery options etc etc (look at args of api_post...)
+            res = await api_post_order_with_login(title, desc, price, image_data=images)
+            if not res[0]:
+                logging.error("Main was not able to create post, for unknown reason :(")
+                raise
+            listing_id = res[1]
             logger.info("Successfully posted listing with ID: %s", listing_id)
             return listing_id
         except Exception as e:
@@ -439,13 +437,15 @@ async def chat_message(
             return ChatResponse(reply=question, status="pending_info")
 
         # If no questions needed, estimate price and post
-        price = await _estimate_price(title, desc)
-        await _post_listing(title, desc, img_bytes, price)
+        price = await _estimate_price(title, desc, notes=text)
+        url = await _post_listing(title, desc, img_bytes, price)
         await _save_listing(user_id, title, desc, price, img_bytes)
-        await _append_chat(user_id, "bot", f"Ad posted")
+        await _append_chat(user_id, "bot", f"Ad posted successfully to {url}")
         await _clear_pending(user_id)
         return ChatResponse(
-            reply="Ad posted successfully", status="posted", listing_id=user_id
+            reply=f"Ad posted successfully to {url}",
+            status="posted",
+            listing_id=user_id,
         )
 
     # text follow-up with additional info
@@ -470,13 +470,15 @@ async def chat_message(
             return ChatResponse(reply=question, status="pending_info")
 
         # All info gathered, estimate price and post
-        price = await _estimate_price(draft["title"], full_desc)
-        await _post_listing(draft["title"], full_desc, imgs, price)
+        price = await _estimate_price(
+            draft["title"], full_desc, notes=str(chat_history)
+        )
+        url = await _post_listing(draft["title"], full_desc, imgs, price)
         await _save_listing(user_id, draft["title"], full_desc, price, imgs)
-        await _append_chat(user_id, "bot", f"Ad posted")
+        await _append_chat(user_id, "bot", "Ad posted")
         await _clear_pending(user_id)
         return ChatResponse(
-            reply="Ad posted successfully", status="posted", listing_id=user_id
+            reply="Ad posted successfully", status="posted", listing_id=url
         )
 
     raise HTTPException(400, "No valid operation.")
