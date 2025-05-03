@@ -1,23 +1,11 @@
 """fastapi_marketplace_backend.py
 
-Single endpoint (`/chat-message`) for all chat-based ad creation:
- • Handles user messages with optional images.
- • Stores full chat in Redis under `chat:{user_id}` list.
- • On first message with images, generates draft title/description via NVIDIA NIM VLM.
- • Checks for missing info via LLM; if needed, asks follow‑up question.
- • On text‑only messages (answers), merges into draft and publishes the ad.
-
-Environment vars:
-  NIM_API_KEY, NIM_API_URL, VLM_MODEL, LLM_MODEL,
-  REDIS_URL, MARKETPLACE_API_URL
-
-Dependencies: fastapi, httpx, redis.asyncio, python-multipart, pydantic
+Chat‑based ad creation via NVIDIA NIM (`google/gemma-3-27b-it`), single /chat-message endpoint.
+Images are embedded in HTML `<img src="data:image/..."/>` within the prompt.
+Uses Redis for chat history & pending drafts.
 """
 from __future__ import annotations
-import base64
-import json
-import os
-import uuid
+import base64, json, os, uuid
 from typing import List, Optional
 import httpx
 import redis.asyncio as redis
@@ -35,14 +23,16 @@ class Settings:
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     MARKETPLACE_API_URL: str = os.getenv("MARKETPLACE_API_URL", "https://api.marketplace.com/v1/listings")
     REQUEST_TIMEOUT: int = int(os.getenv("REQUEST_TIMEOUT", "15"))
+    MAX_TOKENS: int = int(os.getenv("MAX_TOKENS", "512"))
+    TOP_P: float = float(os.getenv("TOP_P", "0.70"))
+    TEMPERATURE: float = float(os.getenv("TEMPERATURE", "0.20"))
 
 settings = Settings()
 redis_pool = redis.from_url(settings.REDIS_URL, decode_responses=False)
-
-app = FastAPI(title="Chat-based Marketplace Ad Backend", version="3.0.0")
+app = FastAPI(title="Chat‑Ad Backend", version="3.1.0")
 
 # --------------------------------------------------------------------------- #
-# Pydantic models
+# Models
 # --------------------------------------------------------------------------- #
 class ChatResponse(BaseModel):
     reply: str
@@ -50,36 +40,49 @@ class ChatResponse(BaseModel):
     listing_id: Optional[str] = None
 
 # --------------------------------------------------------------------------- #
-# NVIDIA NIM helper
+# NIM helper
 # --------------------------------------------------------------------------- #
-async def _nim_chat(model: str, messages: list[dict], temperature: float = 0.2) -> str:
+async def _nim_chat(
+    model: str,
+    messages: List[dict],
+    stream: bool = False
+) -> str:
+    payload = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": settings.MAX_TOKENS,
+        "temperature": settings.TEMPERATURE,
+        "top_p": settings.TOP_P,
+        "stream": stream,
+    }
     async with httpx.AsyncClient(timeout=settings.REQUEST_TIMEOUT) as client:
         resp = await client.post(
             settings.NIM_API_URL,
             headers={"Authorization": f"Bearer {settings.NIM_API_KEY}"},
-            json={"model": model, "messages": messages, "temperature": temperature},
+            json=payload,
         )
         resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+        data = resp.json()
+        # non-stream: single content
+        return data["choices"][0]["message"]["content"]
 
 # --------------------------------------------------------------------------- #
-# Vision & LLM routines
+# Vision & LLM
 # --------------------------------------------------------------------------- #
-def _img_to_data_url(b: bytes) -> str:
+def _to_data_url(b: bytes) -> str:
     return "data:image/jpeg;base64," + base64.b64encode(b).decode()
 
-async def _vlm_extract_title_desc(images: List[bytes]) -> tuple[str, str]:
-    prompt = (
-        "Create a marketplace listing from the image.\n"
-        "1. Provide a concise TITLE (≤12 words).\n"
-        "2. Provide a DESCRIPTION in 2-4 sentences, covering key features & condition.\n"
-        "Respond ONLY with minified JSON: {\"title\":<title>,\"description\":<description>}"
+async def _vlm_extract_title_desc(images: List[bytes]) -> tuple[str,str]:
+    img_tag = f'<img src="{_to_data_url(images[0])}" />'
+    content_prompt = (
+        "Create a marketplace listing from this image.\n"
+        "1. Give a concise TITLE (≤12 words).\n"
+        "2. Give a DESCRIPTION (2–4 sentences) with key features & condition.\n"
+        "Respond with the title and description only, no other text.\n"
     )
-    msgs = [{"role":"user","content":prompt},
-           {"role":"user","content":[{"type":"image_url","image_url":_img_to_data_url(images[0])}]}]
-    content = await _nim_chat(settings.VLM_MODEL, msgs, temperature=0.0)
-    data = json.loads(content)
-    return data["title"].strip(), data["description"].strip()
+    messages = [{"role":"user","content": content_prompt + " " + img_tag}]
+    resp = await _nim_chat(settings.VLM_MODEL, messages)
+    return resp, resp
 
 async def _llm_missing_info_question(title: str, desc: str) -> Optional[str]:
     prompt = (
@@ -87,84 +90,80 @@ async def _llm_missing_info_question(title: str, desc: str) -> Optional[str]:
         f"\nTITLE: {title}\nDESCRIPTION: {desc}\n"
         "Otherwise, ask one short question (≤15 words) for missing details."
     )
-    ans = await _nim_chat(settings.LLM_MODEL, [{"role":"user","content":prompt}], temperature=0)
+    messages = [{"role":"user","content": prompt}]
+    ans = await _nim_chat(settings.LLM_MODEL, messages)
     ans = ans.strip()
     return None if ans.upper()=="NONE" else ans
 
-async def _post_marketplace_listing(title: str, description: str, images: List[bytes]) -> str:
+async def _post_listing(title: str, desc: str, images: List[bytes]) -> str:
     async with httpx.AsyncClient(timeout=settings.REQUEST_TIMEOUT) as client:
         files = {f"image{idx}": (f"img{idx}.jpg", img, "image/jpeg")
-                 for idx, img in enumerate(images)}
-        resp = await client.post(settings.MARKETPLACE_API_URL,
-                                 data={"title":title,"description":description},
-                                 files=files)
-        resp.raise_for_status()
-        return resp.json().get("id", "")
+                 for idx,img in enumerate(images)}
+        r = await client.post(
+            settings.MARKETPLACE_API_URL,
+            data={"title":title, "description":desc},
+            files=files
+        )
+        r.raise_for_status()
+        return r.json().get("id", "")
 
 # --------------------------------------------------------------------------- #
-# Redis helpers
+# Redis utils
 # --------------------------------------------------------------------------- #
-async def _save_pending(user_id: str, draft: dict):
-    await redis_pool.set(f"ad:{user_id}", json.dumps(draft))
-async def _load_pending(user_id: str) -> Optional[dict]:
-    v = await redis_pool.get(f"ad:{user_id}"); return None if v is None else json.loads(v)
-async def _clear_pending(user_id: str):
-    await redis_pool.delete(f"ad:{user_id}")
-async def _append_chat(user_id: str, sender: str, text: str):
-    entry = json.dumps({"from":sender,"text":text})
-    await redis_pool.rpush(f"chat:{user_id}", entry)
+async def _save_pending(uid: str, d: dict): await redis_pool.set(f"ad:{uid}", json.dumps(d))
+async def _load_pending(uid: str) -> Optional[dict]:
+    v = await redis_pool.get(f"ad:{uid}"); return None if v is None else json.loads(v)
+async def _clear_pending(uid: str): await redis_pool.delete(f"ad:{uid}")
+async def _append_chat(uid: str, frm: str, txt: str):
+    await redis_pool.rpush(f"chat:{uid}", json.dumps({"from":frm,"text":txt}))
 
 # --------------------------------------------------------------------------- #
-# Single chat endpoint
+# Chat endpoint
 # --------------------------------------------------------------------------- #
 @app.post("/chat-message", response_model=ChatResponse)
 async def chat_message(
     user_id: str = Form(...),
     text: Optional[str] = Form(None),
-    images: Optional[List[UploadFile]] = File(None),
+    images: Optional[List[UploadFile]] = File(None)
 ):
-    # Validate input
     if not text and not images:
-        raise HTTPException(400, "Provide at least text or images.")
-    # Save user message
-    if text:
-        await _append_chat(user_id, "user", text)
-    img_bytes_list = []
+        raise HTTPException(400, "Need text or images.")
+    # log user
+    if text: await _append_chat(user_id, "user", text)
+    img_bytes = []
     if images:
-        for img in images:
-            if img.content_type not in ("image/jpeg","image/png"):
-                raise HTTPException(400,"Only JPEG/PNG images supported.")
-            b = await img.read(); img_bytes_list.append(b)
-        await _append_chat(user_id, "user", f"<sent {len(img_bytes_list)} image(s)>")
+        for f in images:
+            if f.content_type not in ("image/jpeg","image/png"):
+                raise HTTPException(400, "Only JPEG/PNG supported.")
+            b=await f.read(); img_bytes.append(b)
+        await _append_chat(user_id, "user", f"<sent {len(img_bytes)} images>")
 
     draft = await _load_pending(user_id)
-    # New ad start
-    if img_bytes_list and draft is None:
+    # first image triggers draft
+    if img_bytes and not draft:
         ad_id = str(uuid.uuid4())
-        title, desc = await _vlm_extract_title_desc(img_bytes_list)
-        question = await _llm_missing_info_question(title, desc)
-        # store draft
+        title,desc = await _vlm_extract_title_desc(img_bytes)
+        question = await _llm_missing_info_question(title,desc)
+        # save
         await _save_pending(user_id, {"ad_id":ad_id,
-                                      "images":[base64.b64encode(b).decode() for b in img_bytes_list],
-                                      "title":title, "description":desc})
+            "images":[base64.b64encode(b).decode() for b in img_bytes],
+            "title":title,"description":desc
+        })
         if question:
-            await _append_chat(user_id, "bot", question)
-            return ChatResponse(reply=question, status="pending_info")
-        # immediate post
-        listing_id = await _post_marketplace_listing(title, desc, img_bytes_list)
-        await _append_chat(user_id, "bot", f"Your ad is posted: {listing_id}")
+            await _append_chat(user_id,"bot",question)
+            return ChatResponse(reply=question,status="pending_info")
+        lid = await _post_listing(title,desc,img_bytes)
+        await _append_chat(user_id,"bot",f"Ad posted: {lid}")
         await _clear_pending(user_id)
-        return ChatResponse(reply=f"Ad posted with ID {listing_id}", status="posted", listing_id=listing_id)
+        return ChatResponse(reply=f"Ad posted with ID {lid}", status="posted", listing_id=lid)
 
-    # Follow‑up answer
+    # text follow-up
     if text and draft:
-        # user provided missing info
         full_desc = draft["description"] + "\n\n" + text.strip()
-        images_decoded = [base64.b64decode(b) for b in draft["images"]]
-        listing_id = await _post_marketplace_listing(draft["title"], full_desc, images_decoded)
-        await _append_chat(user_id, "bot", f"Ad posted with ID {listing_id}")
+        imgs = [base64.b64decode(x) for x in draft["images"]]
+        lid = await _post_listing(draft["title"], full_desc, imgs)
+        await _append_chat(user_id,"bot",f"Ad posted: {lid}")
         await _clear_pending(user_id)
-        return ChatResponse(reply=f"Ad posted with ID {listing_id}", status="posted", listing_id=listing_id)
+        return ChatResponse(reply=f"Ad posted with ID {lid}", status="posted", listing_id=lid)
 
-    # No action
-    raise HTTPException(400, "No valid operation for given input.")
+    raise HTTPException(400, "No valid operation.")
