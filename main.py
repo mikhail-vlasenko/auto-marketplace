@@ -509,6 +509,13 @@ async def chat_message(
             reply=f"Ad posted to {url}", status="posted", listing_id=url
         )
 
+    # If we only have text but no draft or images, ask for an image
+    if text and not draft and not img_bytes:
+        return ChatResponse(
+            reply="Please provide the image of the product",
+            status="pending_info"
+        )
+
     raise HTTPException(400, "No valid operation.")
 
 
