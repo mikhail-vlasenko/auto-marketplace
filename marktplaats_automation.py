@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 HEADLESS = True
 FAKE_POSTING = True
-DELAY = 2500
+DELAY = 4000
 
 
 class MarktplaatsAutomation:
@@ -216,6 +216,7 @@ class MarktplaatsAutomation:
         try:
             # Navigate to main page first
             await self.page.goto("https://www.marktplaats.nl/", wait_until="commit")
+            await self.page.wait_for_timeout(DELAY)
 
             # Accept cookies if the dialog appears
             await self._handle_cookie_dialog()
@@ -278,6 +279,7 @@ class MarktplaatsAutomation:
         try:
             # Make sure we're on the main page
             await self.page.goto("https://www.marktplaats.nl/", wait_until="commit")
+            await self.page.wait_for_timeout(DELAY)
             logger.info("Navigated to Marktplaats homepage")
 
             # Accept cookies if the dialog appears
@@ -304,7 +306,7 @@ class MarktplaatsAutomation:
                 logger.info("Successfully navigated to messages page")
 
                 # Wait for messages to appear (maximum 5 seconds)
-                max_wait_time = 2
+                max_wait_time = 5
 
                 # Look for conversation list items or other message UI elements
                 message_selectors = [
