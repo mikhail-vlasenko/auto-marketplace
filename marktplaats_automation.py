@@ -215,7 +215,7 @@ class MarktplaatsAutomation:
     async def login(self, username: str, password: str) -> bool:
         try:
             # Navigate to main page first
-            await self.page.goto("https://www.marktplaats.nl/")
+            await self.page.goto("https://www.marktplaats.nl/", wait_until="commit")
 
             # Accept cookies if the dialog appears
             await self._handle_cookie_dialog()
@@ -277,7 +277,7 @@ class MarktplaatsAutomation:
         """
         try:
             # Make sure we're on the main page
-            await self.page.goto("https://www.marktplaats.nl/")
+            await self.page.goto("https://www.marktplaats.nl/", wait_until="commit")
             logger.info("Navigated to Marktplaats homepage")
 
             # Accept cookies if the dialog appears
