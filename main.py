@@ -18,7 +18,17 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pprint import pprint
+
 from marktplaats_automation import MarktplaatsAutomation, api_post_order_with_login
+from marktplaats_automation import MarktplaatsAutomation
+from bunq.sdk.context.api_context import ApiContext
+from bunq.sdk.context.bunq_context import BunqContext
+from bunq import ApiEnvironmentType
+from bunq.sdk.model.generated.endpoint import MonetaryAccountBankApiObject, PaymentApiObject,BunqMeTabResultResponseApiObject,BunqMeTabApiObject, BunqMeTabEntryApiObject, BunqMeTabEntryApiObject
+from bunq.sdk.model.generated.object_ import AmountObject, PointerObject, NotificationFilterObject
+from bunq import Pagination
+import time
+
 
 # Load environment variables from .env file
 load_dotenv()
@@ -118,6 +128,12 @@ class HealthResponse(BaseModel):
     status: str
     redis_connected: bool
     version: str
+
+
+class PaymentRequest(BaseModel):
+    amount: str
+    recipient_email: str
+    description: str
 
 
 # --------------------------------------------------------------------------- #
@@ -827,6 +843,90 @@ async def run_marktplaats_loop():
 async def startup_event():
     asyncio.create_task(run_marktplaats_loop())
     logger.info("Started Marktplaats automation background task")
+
+
+async def create_bunq_payment(amount: str, recipient_email: str, description: str) -> dict:
+    """
+    Create a payment using the bunq API.
+    
+    Args:
+        amount: The amount to pay in EUR (as a string, e.g. "1.00")
+        recipient_email: The email address of the recipient
+        description: Description of the payment
+        
+    Returns:
+        dict: A dictionary containing payment details including payment_id and balance
+        
+    Raises:
+        HTTPException: If the payment creation fails
+    """
+    try:
+        # Get API key from environment
+        api_key = os.getenv("BUNQ_API_KEY")
+        if not api_key:
+            raise HTTPException(status_code=500, detail="BUNQ_API_KEY not found in environment variables")
+
+        # Create API context
+        api_context = ApiContext.create(
+            ApiEnvironmentType.SANDBOX,
+            api_key,
+            "Auto Marketplace Payment"
+        )
+        
+        # Save the context for future use
+        api_context.save("bunq_api_context.conf")
+        
+        # Load the context into BunqContext
+        BunqContext.load_api_context(api_context)
+        
+        # Get the user context and primary account
+        user_context = BunqContext.user_context()
+        user_id = user_context.user_id
+        primary_account = user_context.primary_monetary_account
+        
+        # Create the payment
+        payment_id = PaymentApiObject.create(
+            amount=AmountObject(amount, "EUR"),
+            counterparty_alias=PointerObject("EMAIL", recipient_email),
+            description=description
+        ).value
+        
+        # Get the current balance
+        balance = primary_account.balance.value
+        
+        logger.info(f"Created bunq payment with ID: {payment_id}")
+        return {
+            "payment_id": payment_id,
+            "user_id": user_id,
+            "account_id": primary_account.id_,
+            "balance": balance
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to create bunq payment: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/create-payment", response_model=dict)
+async def create_payment_endpoint(
+    payment_request: PaymentRequest,
+    token: str = Depends(verify_token)
+):
+    """
+    Create a payment using the bunq API.
+    
+    Request body:
+    {
+        "amount": "1.00",
+        "recipient_email": "recipient@example.com",
+        "description": "Payment for services"
+    }
+    """
+    return await create_bunq_payment(
+        amount=payment_request.amount,
+        recipient_email=payment_request.recipient_email,
+        description=payment_request.description
+    )
 
 
 if __name__ == "__main__":

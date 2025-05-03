@@ -8,3 +8,4 @@ playwright>=1.52.0
 python-dotenv>=1.0.0
 openai
 uvicorn
+bunq-sdk==1.28.0
