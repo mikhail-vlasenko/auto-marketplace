@@ -795,14 +795,37 @@ async def negotiate_with_history(messages: List[dict], title: str) -> str:
         # Check if response starts with ACCEPT
         is_accepted = response.strip().startswith("ACCEPT")
         if is_accepted:
-            # Strip the ACCEPT prefix and any whitespace to get seller notification
-            seller_notification = response.replace("ACCEPT", "", 1).strip()
-            # Send webhook notification to seller with the LLM's message
-            await send_webhook_notification(seller_id, seller_notification)
-            logger.info(f"Deal agreed for listing '{title}'")
+            # Get the agreed price from the LLM
+            price_prompt = {
+                "role": "user",
+                "content": f"From this acceptance message, extract ONLY the agreed price as a decimal number in EUR. Output just the number, nothing else:\n{response}"
+            }
+            try:
+                agreed_price = await _openai_chat(settings.LLM_MODEL, [price_prompt])
+                # Clean up response to get just the number
+                agreed_price = "".join(c for c in agreed_price if c.isdigit() or c == ".")
+                
+                # Create bunq.me payment link
+                payment_link = await create_bunq_me_tab(
+                    amount=agreed_price,
+                    description=f"Payment for {title}",
+                    redirect_url="https://www.marktplaats.nl"
+                )
+                
+                # Strip the ACCEPT prefix and add payment link to seller notification
+                seller_notification = response.replace("ACCEPT", "", 1).strip()
+                seller_notification = f"{seller_notification}\n\nPayment link created: {payment_link['payment_url']}"
+                
+                # Send webhook notification to seller with the LLM's message and payment link
+                await send_webhook_notification(seller_id, seller_notification)
+                logger.info(f"Deal agreed for listing '{title}' at price €{agreed_price}")
+            except Exception as e:
+                logger.error(f"Failed to process payment link: {str(e)}")
+                seller_notification = response.replace("ACCEPT", "", 1).strip()
+                await send_webhook_notification(seller_id, seller_notification)
             
-            # Return a fixed message asking about pickup availability to the buyer
-            response = "Great! The deal is agreed. When would you be available to pick up the item? Please provide some possible time slots that work for you."
+            # Ask about pickup availability
+            response = "When would you be available to pick up the item? Please provide some possible time slots that work for you."
 
         # Save the conversation history in Redis for future reference
         await _append_chat(conv_id, "buyer", latest_message)
@@ -857,39 +880,16 @@ async def run_marktplaats_loop():
                                     chat["messages"]
                                     and chat["messages"][-1]["side"] != "me"
                                 ):
-                                    # If the last message is agreed or something like this - we tell the user, and do not respond
-                                    response = chat["messages"][-1]["text"]
-
-                                    if (
-                                        "accept" in response.lower()
-                                        or "agreed" in response.lower()
-                                    ):
-                                        resp = "Superb!"
-
-                                        # Do the thing...
-                                        # trigger_message_on_client(title=chat["title"])
-
-                                    else:
-                                        # Generate a response using our negotiate_with_history function
-                                        resp = await negotiate_with_history(
-                                            chat["messages"], title=chat["title"]
-                                        )
+                                    # Generate a response using our negotiate_with_history function
+                                    resp = await negotiate_with_history(
+                                        chat["messages"], title=chat["title"]
+                                    )
 
                                     if resp:  # Only send if we have a response
                                         logger.info(
                                             f"Responding to message about {chat['title']}"
                                         )
                                         await automation.send_message(chat["id"], resp)
-
-                                    # Fallback to mirroring if debug is enabled
-                                    elif settings.MIRROR_DEBUG:
-                                        mirror_resp = f"You just said: {chat['messages'][-1]['text']}"
-                                        logger.info(
-                                            f"Sending debug mirror message: {mirror_resp}"
-                                        )
-                                        await automation.send_message(
-                                            chat["id"], mirror_resp
-                                        )
                         except Exception as e:
                             logger.error(
                                 f"Error in message loop: {traceback.format_exc()}"
