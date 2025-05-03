@@ -488,19 +488,18 @@ async def negotiate(
         logger.error("Failed to process negotiation: %s", str(e))
         raise HTTPException(500, "Failed to process negotiation message")
 
-@app.delete("/user/{user_id}", response_model=dict)
-async def delete_user_data(
-    user_id: str,
+@app.delete("/wipe", response_model=dict)
+async def wipe_all_data(
     token: str = Depends(verify_token)
 ):
-    """Delete all data associated with a user."""
+    """Delete all data from Redis."""
     try:
-        logger.info("Deleting all data for user %s", user_id)
-        await _delete_user_data(user_id)
-        return {"status": "success", "message": f"All data deleted for user {user_id}"}
+        logger.info("Wiping all Redis data")
+        await redis_pool.flushdb()
+        return {"status": "success", "message": "All Redis data wiped"}
     except Exception as e:
-        logger.error("Failed to delete user data: %s", str(e))
-        raise HTTPException(500, "Failed to delete user data")
+        logger.error("Failed to wipe Redis data: %s", str(e))
+        raise HTTPException(500, "Failed to wipe Redis data")
 
 # --------------------------------------------------------------------------- #
 # Health endpoint
