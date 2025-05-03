@@ -549,6 +549,8 @@ async def negotiate(
         "This is not the only potential buyer, so it is not critical to close the deal. "
         "Use the listing details and conversation history to help negotiate. "
         "Reply with short messages, no one wants to read long texts.\n\n"
+        "IMPORTANT: If you decide to accept the offer and close the deal, start your response with 'ACCEPT' "
+        "followed by your message to the seller that you represent. Your message should include the agreed price.\n\n"
     )
 
     # Add listing details to the prompt
@@ -556,7 +558,7 @@ async def negotiate(
         f"LISTING DETAILS:\n"
         f"Title: {listing['title']}\n"
         f"Description: {listing['description']}\n"
-        f"Listed Price: ${listing['price']:.2f}\n\n"
+        f"Listed Price: €{listing['price']:.2f}\n\n"
     )
 
     # Build the conversation context
@@ -665,6 +667,43 @@ async def find_seller_by_title(title: str) -> Optional[str]:
     return None
 
 
+async def send_webhook_notification(user_id: str, message: str, images: List[str] = None):
+    """
+    Send a webhook notification to the client application.
+    
+    Args:
+        user_id: The ID of the user to notify
+        message: The message text to send
+        images: Optional list of image URLs/data
+    """
+    if images is None:
+        images = []
+        
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            webhook_data = {
+                "user_id": user_id,
+                "message": {
+                    "text": message,
+                    "images": images
+                }
+            }
+            
+            response = await client.post(
+                "http://localhost:3000/api/webhook",
+                json=webhook_data,
+                headers={"Content-Type": "application/json"}
+            )
+            
+            if response.status_code != 200:
+                logger.error(f"Webhook notification failed with status {response.status_code}: {response.text}")
+            else:
+                logger.info(f"Successfully sent webhook notification to user {user_id}")
+                
+    except Exception as e:
+        logger.error(f"Failed to send webhook notification: {traceback.format_exc()}")
+
+
 async def negotiate_with_history(messages: List[dict], title: str) -> str:
     """
     Negotiate with a buyer using message history and listing details.
@@ -725,6 +764,8 @@ async def negotiate_with_history(messages: List[dict], title: str) -> str:
         "This is not the only potential buyer, so it is not critical to close the deal. "
         "Use the listing details and conversation history to help negotiate. "
         "Reply with short messages, no one wants to read long texts.\n\n"
+        "IMPORTANT: If you decide to accept the offer and close the deal, start your response with 'ACCEPT' "
+        "followed by your message to the seller that you represent. Your message should include the agreed price.\n\n"
     )
 
     # Add listing details to the prompt
@@ -750,6 +791,18 @@ async def negotiate_with_history(messages: List[dict], title: str) -> str:
     # Get AI response
     try:
         response = await _openai_chat(settings.LLM_MODEL, messages_for_ai)
+        
+        # Check if response starts with ACCEPT
+        is_accepted = response.strip().startswith("ACCEPT")
+        if is_accepted:
+            # Strip the ACCEPT prefix and any whitespace to get seller notification
+            seller_notification = response.replace("ACCEPT", "", 1).strip()
+            # Send webhook notification to seller with the LLM's message
+            await send_webhook_notification(seller_id, seller_notification)
+            logger.info(f"Deal agreed for listing '{title}'")
+            
+            # Return a fixed message asking about pickup availability to the buyer
+            response = "Great! The deal is agreed. When would you be available to pick up the item? Please provide some possible time slots that work for you."
 
         # Save the conversation history in Redis for future reference
         await _append_chat(conv_id, "buyer", latest_message)
