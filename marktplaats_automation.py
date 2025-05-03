@@ -704,11 +704,18 @@ class MarktplaatsAutomation:
                         if description_frame:
                             # We need to fill the tinymce body
 
-                            stuff = (
-                                await self.page.frame_locator("iframe")
-                                .locator("*")
-                                .all()
-                            )
+                            async def get_all_elements_recursive(locator):
+                                elements = await locator.locator("*").all()
+                                result = list(elements)
+                                for el in elements:
+                                    child_locator = el.locator("*")
+                                    children = await get_all_elements_recursive(
+                                        child_locator
+                                    )
+                                    result.extend(children)
+                                return result
+
+                            stuff = await get_all_elements_recursive(description_frame)
                             breakpoint()
                             editor_body = description_frame.locator("body#tinymce")
 
