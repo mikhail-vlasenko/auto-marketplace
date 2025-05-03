@@ -12,6 +12,7 @@ import httpx
 import redis.asyncio as redis
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Depends, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # Load environment variables from .env file
@@ -38,10 +39,10 @@ class Settings:
     LLM_MODEL: str = os.getenv("LLM_MODEL", "google/gemma-3-27b-it")
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     MARKETPLACE_API_URL: str = os.getenv("MARKETPLACE_API_URL", "https://api.marketplace.com/v1/listings")
-    REQUEST_TIMEOUT: int = int(os.getenv("REQUEST_TIMEOUT", "15"))
+    REQUEST_TIMEOUT: int = int(os.getenv("REQUEST_TIMEOUT", "300"))
     MAX_TOKENS: int = int(os.getenv("MAX_TOKENS", "512"))
     TOP_P: float = float(os.getenv("TOP_P", "0.70"))
-    TEMPERATURE: float = float(os.getenv("TEMPERATURE", "0.20"))
+    TEMPERATURE: float = float(os.getenv("TEMPERATURE", "0.0"))
     API_TOKEN: str = os.getenv("API_TOKEN", "")
 
 settings = Settings()
@@ -51,6 +52,15 @@ redis_pool = redis.from_url(settings.REDIS_URL, decode_responses=False)
 logger.info("Connected to Redis at %s", settings.REDIS_URL)
 
 app = FastAPI(title="Chat‑Ad Backend", version="3.1.0")
+
+# Configure CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
 
 # --------------------------------------------------------------------------- #
 # Authentication
@@ -75,6 +85,11 @@ class ChatResponse(BaseModel):
     reply: str
     status: str               # "pending_info" | "posted"
     listing_id: Optional[str] = None
+
+class HealthResponse(BaseModel):
+    status: str
+    redis_connected: bool
+    version: str
 
 # --------------------------------------------------------------------------- #
 # NIM helper
@@ -226,3 +241,23 @@ async def chat_message(
         return ChatResponse(reply=f"Ad posted with ID {lid}", status="posted", listing_id=lid)
 
     raise HTTPException(400, "No valid operation.")
+
+# --------------------------------------------------------------------------- #
+# Health endpoint
+# --------------------------------------------------------------------------- #
+@app.get("/health", response_model=HealthResponse)
+async def health():
+    """Check service health including Redis connection."""
+    redis_ok = False
+    try:
+        # Test Redis connection with a simple ping
+        await redis_pool.ping()
+        redis_ok = True
+    except Exception as e:
+        logger.error("Redis health check failed: %s", str(e))
+    
+    return HealthResponse(
+        status="healthy" if redis_ok else "degraded",
+        redis_connected=redis_ok,
+        version=app.version
+    )
