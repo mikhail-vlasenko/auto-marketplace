@@ -701,6 +701,7 @@ class MarktplaatsAutomation:
 
                         if description_frame:
                             # We need to fill the tinymce body
+                            breakpoint()
                             editor_body = description_frame.locator("body#tinymce")
 
                             if await editor_body.count() > 0:
