@@ -702,12 +702,6 @@ class MarktplaatsAutomation:
                         )
 
                         if description_frame:
-                            stuff = (
-                                await self.page.frame_locator("iframe")
-                                .locator("*")
-                                .all()
-                            )
-                            breakpoint()
                             editor_body = description_frame.locator("body#tinymce")
 
                             if await editor_body.count() > 0:
