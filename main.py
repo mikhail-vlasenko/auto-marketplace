@@ -545,7 +545,7 @@ async def negotiate(
     # Construct the prompt with full context
     system_prompt = (
         "You are negotiating with a potential buyer on behalf of your client, the seller. "
-        "You want the best deal possible for your client. "
+        "Be friendly, if the person offers the suggested price, accept the offer. "
         "This is not the only potential buyer, so it is not critical to close the deal. "
         "Use the listing details and conversation history to help negotiate. "
         "Reply with short messages, no one wants to read long texts.\n\n"
@@ -760,7 +760,7 @@ async def negotiate_with_history(messages: List[dict], title: str) -> str:
     # Construct the prompt with full context
     system_prompt = (
         "You are negotiating with a potential buyer on behalf of your client, the seller. "
-        "You want the best deal possible for your client. "
+        "Be friendly, if the person offers the suggested price, accept the offer. "
         "This is not the only potential buyer, so it is not critical to close the deal. "
         "Use the listing details and conversation history to help negotiate. "
         "Reply with short messages, no one wants to read long texts.\n\n"
@@ -791,6 +791,7 @@ async def negotiate_with_history(messages: List[dict], title: str) -> str:
     # Get AI response
     try:
         response = await _openai_chat(settings.LLM_MODEL, messages_for_ai)
+        logging.info(f"AI response: {response}")
         
         # Check if response starts with ACCEPT
         is_accepted = response.strip().startswith("ACCEPT")
@@ -927,6 +928,7 @@ async def create_bunq_me_tab(amount: str, description: str, redirect_url: str = 
         HTTPException: If the payment link creation fails
     """
     try:
+        logging.warning(f"Creating bunq.me payment link for amount: {amount}, description: {description}, redirect_url: {redirect_url}")
         # Get configuration from environment
         api_key = os.getenv("BUNQ_API_KEY")
         environment = os.getenv("BUNQ_ENVIRONMENT", "SANDBOX")
