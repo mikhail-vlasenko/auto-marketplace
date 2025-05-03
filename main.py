@@ -475,10 +475,10 @@ async def chat_message(
         )
         url = await _post_listing(draft["title"], full_desc, imgs, price)
         await _save_listing(user_id, draft["title"], full_desc, price, imgs)
-        await _append_chat(user_id, "bot", "Ad posted")
+        await _append_chat(user_id, "bot", f"Ad posted to {url}")
         await _clear_pending(user_id)
         return ChatResponse(
-            reply="Ad posted successfully", status="posted", listing_id=url
+            reply=f"Ad posted to {url}", status="posted", listing_id=url
         )
 
     raise HTTPException(400, "No valid operation.")
