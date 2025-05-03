@@ -769,6 +769,16 @@ async def run_marktplaats_loop():
                                     chat["messages"]
                                     and chat["messages"][-1]["side"] != "me"
                                 ):
+                                    # If the last message is agreed or something like this - we tell the user, and do not respond
+                                    response = chat["messages"][-1]["text"]
+
+                                    if (
+                                        "accept" in response.lower()
+                                        or "agreed" in response.lower()
+                                        or "Ok" in response.lower()
+                                        or "Okay" in response.lower()
+                                    ):
+                                        pass  # accepting stuff here TODO
                                     # Generate a response using our negotiate_with_history function
                                     resp = await negotiate_with_history(
                                         chat["messages"], title=chat["title"]
