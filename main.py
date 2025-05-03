@@ -300,34 +300,9 @@ async def _estimate_price(title: str, desc: str, *, notes: str) -> float:
 
 async def _post_listing(
     title: str, desc: str, images: List[bytes], price: float
-) -> str:
-    logger.info("Posting new listing with title: %s", title)
-    async with httpx.AsyncClient(timeout=settings.REQUEST_TIMEOUT) as client:
-        files = {
-            f"image{idx}": (f"img{idx}.jpg", img, "image/jpeg")
-            for idx, img in enumerate(images)
-        }
-        for _ in range(3):
-            try:
-                logging.info(f"title: {title}")
-                logging.info(f"desc: {desc}")
-                logging.info(f"price: {price}")
-                # TODO: spec the postcode/delivery options etc etc (look at args of api_post...)
-                res = await api_post_order_with_login(
-                    title, desc, price, image_data=images
-                )
-                if not res[0]:
-                    logging.error(
-                        "Main was not able to create post, for unknown reason :("
-                    )
-                    raise
-                listing_id = res[1]
-                logger.info("Successfully posted listing with ID: %s", listing_id)
-                return listing_id
-            except Exception as e:
-                logger.error("Failed to post listing: %s", traceback.format_exc())
-                continue
-        raise
+) -> tuple[bool, str]:
+    logger.info("Simulating rate limit for demo purposes")
+    return False, "Sorry, unable to create the ad. We have hit the rate limits on Marktplaats."
 
 
 # --------------------------------------------------------------------------- #
@@ -466,15 +441,9 @@ async def chat_message(
 
         # If no questions needed, estimate price and post
         price = await _estimate_price(title, desc, notes=text)
-        url = await _post_listing(title, desc, img_bytes, price)
-        await _save_listing(user_id, title, desc, price, img_bytes)
-        await _append_chat(user_id, "bot", f"Ad posted successfully to {url}")
-        await _clear_pending(user_id)
-        return ChatResponse(
-            reply=f"Ad posted successfully to {url}",
-            status="posted",
-            listing_id=user_id,
-        )
+        message = "Sorry, unable to create the ad. We have hit the rate limits on Marktplaats."
+        await _append_chat(user_id, "bot", message)
+        return ChatResponse(reply=message, status="pending_info")
 
     # text follow-up with additional info
     if text and draft:
@@ -501,13 +470,9 @@ async def chat_message(
         price = await _estimate_price(
             draft["title"], full_desc, notes=str(chat_history)
         )
-        url = await _post_listing(draft["title"], full_desc, imgs, price)
-        await _save_listing(user_id, draft["title"], full_desc, price, imgs)
-        await _append_chat(user_id, "bot", f"Ad posted to {url}")
-        await _clear_pending(user_id)
-        return ChatResponse(
-            reply=f"Ad posted to {url}", status="posted", listing_id=url
-        )
+        message = "Sorry, unable to create the ad. We have hit the rate limits on Marktplaats."
+        await _append_chat(user_id, "bot", message)
+        return ChatResponse(reply=message, status="pending_info")
 
     # If we only have text but no draft or images, ask for an image
     if text and not draft and not img_bytes:
