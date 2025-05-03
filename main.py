@@ -1,5 +1,4 @@
-"""fastapi_marketplace_backend.py
-
+"""
 Chat‑based ad creation via OpenAI (`gpt-4-vision-preview` and `gpt-4`), single /chat-message endpoint.
 Images are embedded in HTML `<img src="data:image/..."/>` within the prompt.
 Uses Redis for chat history & pending drafts.
@@ -7,6 +6,7 @@ Uses Redis for chat history & pending drafts.
 
 from __future__ import annotations
 import base64, json, os, uuid, logging, asyncio, time
+import hashlib
 import traceback
 from typing import List, Optional
 from dotenv import load_dotenv
@@ -48,6 +48,7 @@ class Settings:
     TOP_P: float = float(os.getenv("TOP_P", "0.70"))
     TEMPERATURE: float = float(os.getenv("TEMPERATURE", "0.0"))
     API_TOKEN: str = os.getenv("API_TOKEN", "")
+    MIRROR_DEBUG: bool = False
 
 
 settings = Settings()
@@ -148,10 +149,10 @@ def _encode_image(b: bytes) -> str:
     return base64.b64encode(b).decode("utf-8")
 
 
-async def _vlm_extract_title_desc(images: List[bytes]) -> tuple[str, str]:
+async def _vlm_extract_title_desc(images: List[bytes], *, notes="") -> tuple[str, str]:
     logger.info("Extracting title and description from image")
     content_prompt = (
-        "Create a marketplace listing from this image.\n"
+        f"Create a marketplace listing from this image. User message is '{notes}'\n"
         "1. Give a concise TITLE (≤12 words).\n"
         "2. Give a DESCRIPTION (2–4 sentences) with key features & condition.\n"
         "Respond with the title, then an empty line and then the description, which may span multiple lines. No other text.\n"
@@ -418,7 +419,7 @@ async def chat_message(
     # first image triggers draft
     if img_bytes and not draft:
         ad_id = str(uuid.uuid4())
-        title, desc = await _vlm_extract_title_desc(img_bytes)
+        title, desc = await _vlm_extract_title_desc(img_bytes, notes=text)
         # Load chat history for context
         chat_history = await _load_chat_history(user_id)
         question = await _llm_missing_info_question(title, desc, chat_history)
@@ -591,6 +592,142 @@ async def health():
     )
 
 
+async def find_seller_by_title(title: str) -> Optional[str]:
+    """
+    Find seller ID based on the listing title in Redis.
+
+    Args:
+        title: The title of the listing to search for
+
+    Returns:
+        Optional[str]: The seller ID if found, None otherwise
+    """
+    logger.debug(f"Searching for seller with listing title: {title}")
+
+    # Get all keys matching the listing pattern
+    pattern = "listing:*"
+    keys = await redis_pool.keys(pattern)
+
+    for key in keys:
+        listing_data = await redis_pool.get(key)
+        if listing_data:
+            try:
+                listing = json.loads(listing_data)
+                # Check if this listing's title matches or is similar enough to our search
+                if title.lower() in listing.get("title", "").lower():
+                    seller_id = key.decode("utf-8").split(":")[1]
+                    logger.info(
+                        f"Found seller {seller_id} for listing with title '{title}'"
+                    )
+                    return seller_id
+            except (json.JSONDecodeError, IndexError) as e:
+                logger.error(f"Error parsing listing data: {e}")
+                continue
+
+    logger.warning(f"No seller found for listing with title '{title}'")
+    return None
+
+
+async def negotiate_with_history(messages: List[dict], title: str) -> str:
+    """
+    Negotiate with a buyer using message history and listing details.
+
+    Args:
+        messages: List of message dictionaries with 'side' and 'text' keys
+        title: The title of the listing being discussed
+
+    Returns:
+        str: The response message to send back to the buyer
+    """
+    # If no messages or last message is from us, don't respond
+    if not messages or messages[-1]["side"] == "me":
+        logger.warning(
+            "No new messages to respond to: should not happen at this stage!"
+        )
+        return ""
+
+    # Get the last message from the other person
+    latest_message = messages[-1]["text"]
+    logger.debug(f"Processing incoming message: {latest_message}")
+
+    # Find the seller ID based on the listing title
+    seller_id = await find_seller_by_title(title)
+
+    if not seller_id:
+        # Fallback if no listing is found
+        logger.warning(f"No listing found for title: {title}, using default response")
+        if settings.MIRROR_DEBUG:
+            return f"You just said: {latest_message}"
+        return "Thank you for your message. Will reply in a second.."
+
+    # Create a unique conversation ID (we'll use a temporary one for the negotiation)
+    # Since we don't know the buyer ID, we'll generate a random one, based on the title
+    buyer_id = hashlib.md5(title.encode()).hexdigest()[:8]
+    conv_id = f"neg:{seller_id}:{buyer_id}"
+
+    # Load the listing information
+    listing = await _get_listing(seller_id)
+    if not listing:
+        logger.warning(f"Listing data not found for seller ID: {seller_id}")
+        if settings.MIRROR_DEBUG:
+            return f"You just said: {latest_message}"
+        return "Thank you for your interest in this item. I'll check the details and get back to you."
+
+    # Prepare the conversation history
+    negotiation_history = []
+    for msg in messages:
+        if msg["side"] == "other":
+            negotiation_history.append({"from": "buyer", "text": msg["text"]})
+        else:
+            negotiation_history.append({"from": "bot", "text": msg["text"]})
+
+    # Construct the prompt with full context
+    system_prompt = (
+        "You are negotiating with a potential buyer on behalf of your client, the seller. "
+        "You want the best deal possible for your client. "
+        "This is not the only potential buyer, so it is not critical to close the deal. "
+        "Use the listing details and conversation history to help negotiate. "
+        "Reply with short messages, no one wants to read long texts.\n\n"
+    )
+
+    # Add listing details to the prompt
+    system_prompt += (
+        f"LISTING DETAILS:\n"
+        f"Title: {listing['title']}\n"
+        f"Description: {listing['description']}\n"
+        f"Listed Price: €{listing['price']:.2f}\n\n"
+    )
+
+    # Build the conversation context
+    messages_for_ai = [{"role": "system", "content": system_prompt}]
+
+    # Add negotiation history
+    for msg in negotiation_history:
+        messages_for_ai.append(
+            {
+                "role": "user" if msg["from"] == "buyer" else "assistant",
+                "content": msg["text"],
+            }
+        )
+
+    # Get AI response
+    try:
+        response = await _openai_chat(settings.LLM_MODEL, messages_for_ai)
+
+        # Save the conversation history in Redis for future reference
+        await _append_chat(conv_id, "buyer", latest_message)
+        await _append_chat(conv_id, "bot", response)
+
+        logger.info(f"Generated negotiation response for listing '{title}': {response}")
+        return response
+
+    except Exception as e:
+        logger.error(f"Error generating negotiation response: {traceback.format_exc()}")
+        if settings.MIRROR_DEBUG:
+            return f"You just said: {latest_message}"
+        return "Sorry, I'm having trouble processing your message right now. I'll get back to you soon!"
+
+
 async def run_marktplaats_loop():
     """Run the Marktplaats automation in an infinite loop."""
     # Get the directory where the script is located
@@ -625,18 +762,31 @@ async def run_marktplaats_loop():
                         try:
                             chats = (await automation.read_messages())["chats"]
                             for chat in chats:
-                                # here is the important processing of stuff
-                                # we need to identify what user this is - by the title of the item
-                                # and then use some random method ala negotiate to talk
+                                # Only respond if the last message is from the other person
                                 if (
                                     chat["messages"]
                                     and chat["messages"][-1]["side"] != "me"
                                 ):
-                                    resp = (
-                                        f"You just said: {chat['messages'][-1]['text']}"
+                                    # Generate a response using our negotiate_with_history function
+                                    resp = await negotiate_with_history(
+                                        chat["messages"], title=chat["title"]
                                     )
-                                    logger.info(f"Sending a mirrored message: {resp}")
-                                    await automation.send_message(chat["id"], resp)
+
+                                    if resp:  # Only send if we have a response
+                                        logger.info(
+                                            f"Responding to message about {chat['title']}"
+                                        )
+                                        await automation.send_message(chat["id"], resp)
+
+                                    # Fallback to mirroring if debug is enabled
+                                    elif settings.MIRROR_DEBUG:
+                                        mirror_resp = f"You just said: {chat['messages'][-1]['text']}"
+                                        logger.info(
+                                            f"Sending debug mirror message: {mirror_resp}"
+                                        )
+                                        await automation.send_message(
+                                            chat["id"], mirror_resp
+                                        )
                         except Exception as e:
                             logger.error(
                                 f"Error in message loop: {traceback.format_exc()}"

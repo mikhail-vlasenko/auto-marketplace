@@ -1,0 +1,46 @@
+[
+  {
+    "id": "525bfd8a",
+    "title": "Schattige Eenhoorn Knuffel met AWS Startups Shirt",
+    "messages": [
+      {
+        "side": "other",
+        "text": "Would you do 50c?"
+      },
+      {
+        "side": "me",
+        "text": "yoo"
+      }
+    ]
+  },
+  {
+    "id": "43da03a4",
+    "title": "Schattige Eenhoorn Knuffel met AWS Startups Shirt",
+    "messages": [
+      {
+        "side": "other",
+        "text": "Hello SSF, what is the lowest price you would accept?"
+      },
+      {
+        "side": "me",
+        "text": "5 quadrillion dollars"
+      },
+      {
+        "side": "me",
+        "text": "good morning"
+      },
+      {
+        "side": "me",
+        "text": "good morning"
+      },
+      {
+        "side": "other",
+        "text": "what’s lowest price"
+      },
+      {
+        "side": "me",
+        "text": "You just said: what’s lowest price"
+      }
+    ]
+  }
+]

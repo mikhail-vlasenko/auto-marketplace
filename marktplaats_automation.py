@@ -73,7 +73,7 @@ class MarktplaatsAutomation:
             await self.page.wait_for_timeout(
                 1500
             )  # Wait for cookie banner to disappear
-            logger.debug("Cookie accept clicked; waiting done")
+            logger.info("Cookie accept clicked; waiting done")
 
     async def _handle_modal_dialog(self):
         """Handle modal dialog with 'Bedankt, ik snap het!' button if it appears."""
@@ -81,7 +81,7 @@ class MarktplaatsAutomation:
             'button.hz-Button.hz-Button--primary:has-text("Bedankt, ik snap het!")'
         )
         if await modal_button.count() > 0:
-            logger.debug("Modal found, clicking 'Bedankt, ik snap het!' button")
+            logger.info("Modal found, clicking 'Bedankt, ik snap het!' button")
             await modal_button.click()
             await self.page.wait_for_timeout(1500)
 
@@ -143,7 +143,7 @@ class MarktplaatsAutomation:
             if await timestamp_element.count() > 0:
                 timestamp = await timestamp_element.inner_text()
         except Exception as e:
-            logger.debug(f"Error getting timestamp: {e}")
+            logger.info(f"Error getting timestamp: {e}")
 
             # Alternative approach - get all elements and use the first one
             try:
@@ -154,7 +154,7 @@ class MarktplaatsAutomation:
                 if all_timestamp_elements and len(all_timestamp_elements) > 0:
                     timestamp = await all_timestamp_elements[0].inner_text()
             except Exception as e2:
-                logger.debug(f"Alternative timestamp extraction also failed: {e2}")
+                logger.info(f"Alternative timestamp extraction also failed: {e2}")
 
         return timestamp
 
@@ -205,7 +205,7 @@ class MarktplaatsAutomation:
 
             # Accept cookies if the dialog appears
             await self._handle_cookie_dialog()
-            logger.debug("Cookie button not found; all good")
+            logger.info("Cookie button not found; all good")
 
             # Check if we're already logged in by looking for the login button
             login_button = self.page.locator('a[data-role="login"]')
@@ -220,13 +220,13 @@ class MarktplaatsAutomation:
             # Fill in login form
             await self.page.fill("#email", username)
             await self.page.fill("#password", password)
-            logger.debug("Login form filled")
+            logger.info("Login form filled")
 
             # Click login button and wait for navigation
             await self.page.click(
                 'button.hz-Button.hz-Button--primary:has-text("Inloggen met je e-mailadres")'
             )
-            logger.debug("Login button clicked")
+            logger.info("Login button clicked")
 
             # Wait for user to complete phone verification (when URL becomes marktplaats.nl)
             logger.info("Waiting for phone verification to complete...")
@@ -243,7 +243,7 @@ class MarktplaatsAutomation:
                     await self.save_cookies()
                     return True
                 else:
-                    logger.debug(f"Current URL: {self.page.url}")
+                    logger.info(f"Current URL: {self.page.url}")
                 await asyncio.sleep(1)
 
             logger.error("Verification timeout reached. Please try again.")
@@ -264,7 +264,7 @@ class MarktplaatsAutomation:
         try:
             # Make sure we're on the main page
             await self.page.goto("https://www.marktplaats.nl/")
-            logger.debug("Navigated to Marktplaats homepage")
+            logger.info("Navigated to Marktplaats homepage")
 
             # Accept cookies if the dialog appears
             await self._handle_cookie_dialog()
@@ -273,7 +273,7 @@ class MarktplaatsAutomation:
             messages_link = self.page.locator(
                 'a.hz-Link[data-role="messaging"][title="Berichten"]'
             )
-            logger.debug("Searching for messages link... done")
+            logger.info("Searching for messages link... done")
 
             if await messages_link.count() == 0:
                 logger.warning(
@@ -283,7 +283,7 @@ class MarktplaatsAutomation:
 
             # Click on the link to go to the messages page
             await messages_link.click()
-            logger.debug("Clicked on messages link")
+            logger.info("Clicked on messages link")
 
             # Verify we're on the messages page
             if "messages" in self.page.url:
@@ -306,7 +306,7 @@ class MarktplaatsAutomation:
                 selector = ", ".join(message_selectors)
                 messages_container = self.page.locator(selector).first
 
-                logger.debug(
+                logger.info(
                     f"Waiting up to {max_wait_time} seconds for messages to appear..."
                 )
 
@@ -330,10 +330,10 @@ class MarktplaatsAutomation:
                             logger.debug(f"Found {count} conversation items")
                             success = True
                         else:
-                            logger.debug("No conversation items found, reloading page")
+                            logger.info("No conversation items found, reloading page")
                             await self.page.reload()
                     except Exception as e:
-                        logger.debug(
+                        logger.info(
                             f"Messages not appearing, reloading page... {str(e)}"
                         )
                         await self.page.reload()
@@ -375,7 +375,7 @@ class MarktplaatsAutomation:
                 logger.info("No conversation items found")
                 return {"chats": []}
 
-            logger.info(f"Found {count} conversations, will read messages from each")
+            logger.debug(f"Found {count} conversations, will read messages from each")
             all_chats = []
 
             # Process each conversation
@@ -394,7 +394,7 @@ class MarktplaatsAutomation:
                 title = "Unknown conversation"
                 if await title_element.count() > 0:
                     title = await title_element.inner_text()
-                    logger.debug(f"Conversation {i+1}/{count}: {title}")
+                    logger.info(f"Conversation {i+1}/{count}: {title}")
 
                 # Click on the conversation to open it
                 await conversation.click()
@@ -438,7 +438,7 @@ class MarktplaatsAutomation:
                         await self._handle_modal_dialog()
 
                         if prev_convo == messages:
-                            logger.debug(
+                            logger.info(
                                 "Previous messages are the same as current ones - implies the weird loading state"
                             )
                             await self.page.wait_for_timeout(5000)
@@ -450,7 +450,7 @@ class MarktplaatsAutomation:
                         break
                     else:
                         if attempt < max_attempts - 1:
-                            logger.debug(
+                            logger.info(
                                 f"Messages not appearing (attempt {attempt+1}/{max_attempts}), clicking conversation again..."
                             )
 
@@ -480,7 +480,7 @@ class MarktplaatsAutomation:
 
                 # Check final state
                 if not messages:
-                    logger.debug("No messages found in this conversation")
+                    logger.info("No messages found in this conversation")
 
                 # Clean up the message objects to only include the fields we want in the final output
                 clean_messages = []
@@ -557,7 +557,7 @@ class MarktplaatsAutomation:
             if await cookie_button.count() > 0:
                 await cookie_button.click()
                 await self.page.wait_for_timeout(1500)
-                logger.debug("Cookie accept clicked")
+                logger.info("Cookie accept clicked")
 
             # Find and click the "Plaats advertentie" (Place advertisement) button
             # Using the specific URL and attributes
@@ -889,13 +889,13 @@ async def main():
             while True:
                 try:
                     chats = (await automation.read_messages())["chats"]
-                    logger.debug(json.dumps(chats, indent=2, ensure_ascii=False))
+                    logger.info(json.dumps(chats, indent=2, ensure_ascii=False))
                     for chat in chats:
                         if chat["messages"] and chat["messages"][-1]["side"] != "me":
                             resp = f"You just said: {chat['messages'][-1]['text']}"
                             logger.info(f"Sending mirrored message: {resp}")
                             await automation.send_message(chat["id"], resp)
-                            logger.debug("Message sent successfully")
+                            logger.info("Message sent successfully")
                 except Exception as e:
                     logger.error(f"Error in message loop: {traceback.format_exc()}")
                 await asyncio.sleep(5)
