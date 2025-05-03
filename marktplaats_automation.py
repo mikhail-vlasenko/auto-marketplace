@@ -20,7 +20,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 HEADLESS = True
-FAKE_POSTING = False
+FAKE_POSTING = True
+DELAY = 2500
 
 
 class MarktplaatsAutomation:
@@ -46,7 +47,10 @@ class MarktplaatsAutomation:
         self.browser = await self.playwright.chromium.launch(
             headless=self.headless, slow_mo=self.slow_mo
         )
-        self.context = await self.browser.new_context()
+
+        self.context = await self.browser.new_context(
+            viewport={"width": 1280, "height": 720}
+        )
 
         # Load cookies if they exist
         if os.path.exists(self.cookies_path):
@@ -74,7 +78,7 @@ class MarktplaatsAutomation:
         if await cookie_button.count() > 0:
             await cookie_button.click()
             await self.page.wait_for_timeout(
-                1500
+                DELAY
             )  # Wait for cookie banner to disappear
             logger.info("Cookie accept clicked; waiting done")
 
@@ -86,14 +90,14 @@ class MarktplaatsAutomation:
         if await modal_button.count() > 0:
             logger.info("Modal found, clicking 'Bedankt, ik snap het!' button")
             await modal_button.click()
-            await self.page.wait_for_timeout(1500)
+            await self.page.wait_for_timeout(DELAY)
         modal_button = self.page.locator(
             'button.hz-Button.hz-Button--primary:has-text("Verder")'
         )
         if await modal_button.count() > 0:
             logger.info("Modal found, clicking 'Verder' button")
             await modal_button.click()
-            await self.page.wait_for_timeout(1500)
+            await self.page.wait_for_timeout(DELAY)
 
     async def _extract_messages_from_group(self, message_group):
         """Extract messages from a message group element."""
@@ -347,7 +351,7 @@ class MarktplaatsAutomation:
                             f"Messages not appearing, reloading page... {str(e)}"
                         )
                         await self.page.reload()
-                        await self.page.wait_for_timeout(1500)
+                        await self.page.wait_for_timeout(DELAY)
 
                 if not success:
                     logger.warning("Messages are not appearing after multiple attempts")
@@ -393,7 +397,7 @@ class MarktplaatsAutomation:
             for i in range(count):
                 logger.debug(f"Entering conversation {i}")
                 # Get the conversation item
-                await self.page.wait_for_timeout(1500)
+                await self.page.wait_for_timeout(DELAY)
                 conversation = conversation_items.nth(i)
 
                 # Get the title of the conversation (product name)
@@ -408,7 +412,7 @@ class MarktplaatsAutomation:
 
                 # Click on the conversation to open it
                 await conversation.click()
-                await self.page.wait_for_timeout(1500)
+                await self.page.wait_for_timeout(DELAY)
 
                 # Handle any modal dialog
                 await self._handle_modal_dialog()
@@ -567,7 +571,7 @@ class MarktplaatsAutomation:
             cookie_button = self.page.locator('button[title="Accepteren"]')
             if await cookie_button.count() > 0:
                 await cookie_button.click()
-                await self.page.wait_for_timeout(1500)
+                await self.page.wait_for_timeout(DELAY)
                 logger.info("Cookie accept clicked")
 
             # Find and click the "Plaats advertentie" (Place advertisement) button
@@ -609,7 +613,7 @@ class MarktplaatsAutomation:
                     await find_category_button.click()
 
                     # Wait a moment for the category to be found
-                    await self.page.wait_for_timeout(1500)
+                    await self.page.wait_for_timeout(DELAY)
 
                     # Click the "Verder" (Continue) button
                     continue_button = self.page.locator(
@@ -772,7 +776,7 @@ class MarktplaatsAutomation:
                                         logging.info("Selected 'Verzenden'")
 
                                         # Wait for package size options to appear
-                                        await self.page.wait_for_timeout(1500)
+                                        await self.page.wait_for_timeout(DELAY)
 
                                         # Now select the package size based on the input
                                         if package_size.lower() == "small":
@@ -854,7 +858,7 @@ class MarktplaatsAutomation:
                                     if FAKE_POSTING:
                                         logging.warning("NOT DOING ANYTHING CUZ DEBUG")
                                         return True, "some random url"
-                                    await self.page.wait_for_timeout(1500)
+                                    await self.page.wait_for_timeout(DELAY)
                                     await submit_button.click()
                                     logging.info("Ad submitted successfully!")
                                     return True, self.page.url
