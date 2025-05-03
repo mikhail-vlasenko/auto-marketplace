@@ -5,10 +5,19 @@ import os
 import json
 import glob
 import hashlib
+import logging
 from typing import List, Optional
 from playwright.async_api import async_playwright, Page
 import time
 from dotenv import load_dotenv
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(), logging.FileHandler("marktplaats.log")],
+)
+logger = logging.getLogger(__name__)
 
 
 class MarktplaatsAutomation:
@@ -64,7 +73,7 @@ class MarktplaatsAutomation:
             await self.page.wait_for_timeout(
                 1500
             )  # Wait for cookie banner to disappear
-            print("Cookie accept clicked; waiting done")
+            logger.debug("Cookie accept clicked; waiting done")
 
     async def _handle_modal_dialog(self):
         """Handle modal dialog with 'Bedankt, ik snap het!' button if it appears."""
@@ -72,7 +81,7 @@ class MarktplaatsAutomation:
             'button.hz-Button.hz-Button--primary:has-text("Bedankt, ik snap het!")'
         )
         if await modal_button.count() > 0:
-            print("Modal found, clicking 'Bedankt, ik snap het!' button")
+            logger.debug("Modal found, clicking 'Bedankt, ik snap het!' button")
             await modal_button.click()
             await self.page.wait_for_timeout(1500)
 
@@ -134,7 +143,7 @@ class MarktplaatsAutomation:
             if await timestamp_element.count() > 0:
                 timestamp = await timestamp_element.inner_text()
         except Exception as e:
-            print(f"Error getting timestamp: {e}")
+            logger.debug(f"Error getting timestamp: {e}")
 
             # Alternative approach - get all elements and use the first one
             try:
@@ -145,7 +154,7 @@ class MarktplaatsAutomation:
                 if all_timestamp_elements and len(all_timestamp_elements) > 0:
                     timestamp = await all_timestamp_elements[0].inner_text()
             except Exception as e2:
-                print(f"Alternative timestamp extraction also failed: {e2}")
+                logger.debug(f"Alternative timestamp extraction also failed: {e2}")
 
         return timestamp
 
@@ -183,10 +192,10 @@ class MarktplaatsAutomation:
             cookies = await self.context.cookies()
             with open(self.cookies_path, "w") as f:
                 json.dump(cookies, f)
-            print(f"Cookies saved to {self.cookies_path}")
+            logger.info(f"Cookies saved to {self.cookies_path}")
             return True
         except Exception as e:
-            print(f"Failed to save cookies: {str(e)}")
+            logger.error(f"Failed to save cookies: {str(e)}")
             return False
 
     async def login(self, username: str, password: str) -> bool:
@@ -196,13 +205,13 @@ class MarktplaatsAutomation:
 
             # Accept cookies if the dialog appears
             await self._handle_cookie_dialog()
-            print("Cookie button not found; all good")
+            logger.debug("Cookie button not found; all good")
 
             # Check if we're already logged in by looking for the login button
             login_button = self.page.locator('a[data-role="login"]')
 
             if await login_button.count() == 0:
-                print("Already logged in!")
+                logger.info("Already logged in!")
                 return True
 
             # Otherwise, click on the login button to go to the login page
@@ -211,15 +220,17 @@ class MarktplaatsAutomation:
             # Fill in login form
             await self.page.fill("#email", username)
             await self.page.fill("#password", password)
+            logger.debug("Login form filled")
 
             # Click login button and wait for navigation
             await self.page.click(
                 'button.hz-Button.hz-Button--primary:has-text("Inloggen met je e-mailadres")'
             )
+            logger.debug("Login button clicked")
 
             # Wait for user to complete phone verification (when URL becomes marktplaats.nl)
-            print("Waiting for phone verification to complete...")
-            print(
+            logger.info("Waiting for phone verification to complete...")
+            logger.info(
                 "Please complete the verification in the browser window (if it is there)."
             )
 
@@ -228,21 +239,21 @@ class MarktplaatsAutomation:
             start_time = time.time()
             while time.time() - start_time < max_wait:
                 if "https://www.marktplaats.nl/" == self.page.url:
-                    print("Verification successful!")
+                    logger.info("Verification successful!")
                     await self.save_cookies()
                     return True
                 else:
-                    print(self.page.url)
+                    logger.debug(f"Current URL: {self.page.url}")
                 await asyncio.sleep(1)
 
-            print("Verification timeout reached. Please try again.")
+            logger.error("Verification timeout reached. Please try again.")
             return False
 
         except Exception as e:
-            print(f"Login failed: {str(e)}")
+            logger.error(f"Login failed: {str(e)}")
             return False
 
-    async def get_personal_messages(self) -> bool:
+    async def _get_personal_messages(self) -> bool:
         """
         Navigate to the personal messages page by clicking on the 'Berichten' link.
         If messages don't appear within 5 seconds, reload the page to fix the bug.
@@ -253,6 +264,7 @@ class MarktplaatsAutomation:
         try:
             # Make sure we're on the main page
             await self.page.goto("https://www.marktplaats.nl/")
+            logger.debug("Navigated to Marktplaats homepage")
 
             # Accept cookies if the dialog appears
             await self._handle_cookie_dialog()
@@ -261,18 +273,21 @@ class MarktplaatsAutomation:
             messages_link = self.page.locator(
                 'a.hz-Link[data-role="messaging"][title="Berichten"]'
             )
-            print("Searching for messages link... done")
+            logger.debug("Searching for messages link... done")
 
             if await messages_link.count() == 0:
-                print("Could not find the 'Berichten' link. Are you logged in?")
+                logger.warning(
+                    "Could not find the 'Berichten' link. Are you logged in?"
+                )
                 return False
 
             # Click on the link to go to the messages page
             await messages_link.click()
+            logger.debug("Clicked on messages link")
 
             # Verify we're on the messages page
             if "messages" in self.page.url:
-                print("Successfully navigated to messages page")
+                logger.info("Successfully navigated to messages page")
 
                 # Wait for messages to appear (maximum 5 seconds)
                 max_wait_time = 2
@@ -291,7 +306,7 @@ class MarktplaatsAutomation:
                 selector = ", ".join(message_selectors)
                 messages_container = self.page.locator(selector).first
 
-                print(
+                logger.debug(
                     f"Waiting up to {max_wait_time} seconds for messages to appear..."
                 )
 
@@ -302,34 +317,39 @@ class MarktplaatsAutomation:
                         await messages_container.wait_for(
                             state="visible", timeout=max_wait_time * 1000
                         )
-                        print("Messages or message UI elements loaded successfully")
+                        logger.debug(
+                            "Messages or message UI elements loaded successfully"
+                        )
 
-                        # Print the count of conversation items found
+                        # Count the conversation items found
                         conversation_items = self.page.locator(
                             ".ConversationItem-module-root"
                         )
                         count = await conversation_items.count()
                         if count > 0:
-                            print(f"Found {count} conversation items")
+                            logger.debug(f"Found {count} conversation items")
                             success = True
                         else:
+                            logger.debug("No conversation items found, reloading page")
                             await self.page.reload()
                     except Exception as e:
-                        print(f"Messages not appearing, reloading page... {e}")
+                        logger.debug(
+                            f"Messages not appearing, reloading page... {str(e)}"
+                        )
                         await self.page.reload()
                         await self.page.wait_for_timeout(1500)
 
                 if not success:
-                    print("Messages are not appearing after multiple attempts")
+                    logger.warning("Messages are not appearing after multiple attempts")
                     return False
                 return True
 
             else:
-                print(f"Navigation failed. Current URL: {self.page.url}")
+                logger.warning(f"Navigation failed. Current URL: {self.page.url}")
                 return False
 
         except Exception as e:
-            print(f"Error accessing messages: {str(e)}")
+            logger.error(f"Error accessing messages: {str(e)}")
             return False
 
     async def read_messages(self, *, send_id=None, send_msg=None) -> dict:
@@ -345,23 +365,23 @@ class MarktplaatsAutomation:
         """
         try:
             # Navigate to messages page first
-            await self.get_personal_messages()
+            await self._get_personal_messages()
 
             # Find all conversation items
             conversation_items = self.page.locator(".ConversationItem-module-root")
             count = await conversation_items.count()
 
             if count == 0:
-                print("No conversation items found")
+                logger.info("No conversation items found")
                 return {"chats": []}
 
-            print(f"Found {count} conversations, will read messages from each")
+            logger.info(f"Found {count} conversations, will read messages from each")
             all_chats = []
 
             # Process each conversation
             prev_convo = None
             for i in range(count):
-                print(f"Entering conversation {i}")
+                logger.debug(f"Entering conversation {i}")
                 # Get the conversation item
                 await self.page.wait_for_timeout(1500)
                 conversation = conversation_items.nth(i)
@@ -374,7 +394,7 @@ class MarktplaatsAutomation:
                 title = "Unknown conversation"
                 if await title_element.count() > 0:
                     title = await title_element.inner_text()
-                    print(f"Conversation {i+1}/{count}: {title}")
+                    logger.debug(f"Conversation {i+1}/{count}: {title}")
 
                 # Click on the conversation to open it
                 await conversation.click()
@@ -395,7 +415,7 @@ class MarktplaatsAutomation:
                     # Check if message groups are visible
                     if await message_groups.count() > 0:
                         group_count = await message_groups.count()
-                        print(
+                        logger.debug(
                             f"Found {group_count} message groups in this conversation"
                         )
 
@@ -411,14 +431,14 @@ class MarktplaatsAutomation:
                             messages.extend(group_messages)
 
                             if group_messages:
-                                print(
+                                logger.debug(
                                     f"Message group for date: {date} - {len(group_messages)} messages"
                                 )
 
                         await self._handle_modal_dialog()
 
                         if prev_convo == messages:
-                            print(
+                            logger.debug(
                                 "Previous messages are the same as current ones - implies the weird loading state"
                             )
                             await self.page.wait_for_timeout(5000)
@@ -430,7 +450,7 @@ class MarktplaatsAutomation:
                         break
                     else:
                         if attempt < max_attempts - 1:
-                            print(
+                            logger.debug(
                                 f"Messages not appearing (attempt {attempt+1}/{max_attempts}), clicking conversation again..."
                             )
 
@@ -454,13 +474,13 @@ class MarktplaatsAutomation:
                                 )  # Wait longer for messages to load
                                 await self._handle_modal_dialog()
                         else:
-                            print(
+                            logger.warning(
                                 "Messages still not appearing after multiple attempts"
                             )
 
                 # Check final state
                 if not messages:
-                    print("No messages found in this conversation")
+                    logger.debug("No messages found in this conversation")
 
                 # Clean up the message objects to only include the fields we want in the final output
                 clean_messages = []
@@ -471,7 +491,7 @@ class MarktplaatsAutomation:
                 chat_id = self._generate_chat_id(title, messages)
 
                 if chat_id == send_id and send_msg:
-                    print(
+                    logger.info(
                         f"Found matching conversation with ID {send_id}, sending message: {send_msg}"
                     )
 
@@ -491,14 +511,14 @@ class MarktplaatsAutomation:
 
                         if await send_button.count() > 0:
                             await send_button.click()
-                            print("Send button clicked, message sent")
+                            logger.info("Send button clicked, message sent")
                             await self.page.wait_for_timeout(
                                 2000
                             )  # Wait for message to send
                         else:
-                            print("Could not find the send button")
+                            logger.warning("Could not find the send button")
                     else:
-                        print("Could not find the message input field")
+                        logger.warning("Could not find the message input field")
 
                 # Store the conversation data in our new format with ID
                 chat_data = {"id": chat_id, "title": title, "messages": clean_messages}
@@ -511,7 +531,7 @@ class MarktplaatsAutomation:
             return {"chats": all_chats}
 
         except Exception as e:
-            print(f"Error reading conversation messages: {str(e)}")
+            logger.error(f"Error reading conversation messages: {str(e)}")
             return {"chats": []}
 
     async def send_message(self, id, text):
@@ -528,22 +548,6 @@ class MarktplaatsAutomation:
         category: str = None,
         photos: List[str] = None,
     ) -> bool:
-        """
-        Create a new advertisement post on Marktplaats.
-
-        Args:
-            title: Title of the advertisement
-            description: Detailed description of the item
-            price: Price in Euros
-            delivery_option: "from home" for pickup or "delivery" for shipping
-            package_size: "small", "medium", or "large" (only used if delivery_option is "delivery")
-            postcode: Postal code in Dutch format (e.g., "1234 AB")
-            category: Category of the item (optional)
-            photos: List of file paths to photos to upload (optional)
-
-        Returns:
-            bool: True if the post was created successfully, False otherwise
-        """
         try:
             # Make sure we're on the main page
             await self.page.goto("https://www.marktplaats.nl/")
@@ -553,6 +557,7 @@ class MarktplaatsAutomation:
             if await cookie_button.count() > 0:
                 await cookie_button.click()
                 await self.page.wait_for_timeout(1500)
+                logger.debug("Cookie accept clicked")
 
             # Find and click the "Plaats advertentie" (Place advertisement) button
             # Using the specific URL and attributes
@@ -561,7 +566,7 @@ class MarktplaatsAutomation:
             )
 
             if await place_ad_button.count() == 0:
-                print(
+                logger.warning(
                     "Could not find the 'Place advertisement' button. Are you logged in?"
                 )
                 return False
@@ -835,6 +840,7 @@ Perfect voor op je bureau, in de kinderkamer of als mascotte voor je startup!"""
     package_size = "large"  # Options: "small", "medium", "large"
     postcode = "1043 DR"  # Example Amsterdam postcode
 
+    logger.info("Starting post creation sequence")
     post_created = await automation.create_post(
         title=sample_title,
         description=sample_description,
@@ -845,9 +851,9 @@ Perfect voor op je bureau, in de kinderkamer of als mascotte voor je startup!"""
     )
 
     if post_created:
-        print("Successfully reached the ad creation page")
+        logger.info("Successfully created the advertisement")
     else:
-        print("Failed to reach the ad creation page")
+        logger.error("Failed to create the advertisement")
 
 
 async def main():
@@ -863,8 +869,8 @@ async def main():
     password = os.environ.get("MARKTPLAATS_PASSWORD")
 
     if not username or not password:
-        print("Error: Missing credentials in .env file")
-        print(
+        logger.error("Error: Missing credentials in .env file")
+        logger.error(
             "Please create a .env file with MARKTPLAATS_USERNAME and MARKTPLAATS_PASSWORD"
         )
         return
@@ -874,33 +880,30 @@ async def main():
         logged_in = await automation.login(username, password)
 
         if logged_in:
-            print("Successfully logged in to Marktplaats")
+            logger.info("Successfully logged in to Marktplaats")
 
             # Choose which action to perform (uncomment the desired action)
 
             # 1. Read and parse all messages from conversations
-            print("\n==== Reading all messages from conversations ====\n")
+            logger.info("Starting message monitoring loop")
             while True:
                 try:
                     chats = (await automation.read_messages())["chats"]
-                    print(json.dumps(chats, indent=2, ensure_ascii=False))
+                    logger.debug(json.dumps(chats, indent=2, ensure_ascii=False))
                     for chat in chats:
-                        if chat["messages"][-1]["side"] != "me":
+                        if chat["messages"] and chat["messages"][-1]["side"] != "me":
                             resp = f"You just said: {chat['messages'][-1]['text']}"
-                            print(f"\n==== Sending a mirrowed message {resp} ====\n")
+                            logger.info(f"Sending mirrored message: {resp}")
                             await automation.send_message(chat["id"], resp)
-                            print("DONE")
+                            logger.debug("Message sent successfully")
                 except Exception as e:
-                    print(traceback.format_exc())
-                time.sleep(5)
-
-            # Output the JSON result
-            print("\n==== Conversation Data (JSON) ====\n")
+                    logger.error(f"Error in message loop: {traceback.format_exc()}")
+                await asyncio.sleep(5)
 
             # 2. Create a new post (uncomment if you want to create a post)
             # await make_post_sequence(automation)
         else:
-            print("Failed to log in to Marktplaats")
+            logger.error("Failed to log in to Marktplaats")
 
         # Wait before closing the browser to see the results
         await asyncio.sleep(10)

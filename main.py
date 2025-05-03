@@ -7,6 +7,7 @@ Uses Redis for chat history & pending drafts.
 
 from __future__ import annotations
 import base64, json, os, uuid, logging, asyncio, time
+import traceback
 from typing import List, Optional
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
@@ -135,7 +136,7 @@ async def _openai_chat(model: str, messages: List[dict], stream: bool = False) -
         )
         return response.choices[0].message.content
     except Exception as e:
-        logger.error("OpenAI API call failed: %s", str(e))
+        logger.error("OpenAI API call failed: %s", traceback.format_exc())
         raise
 
 
@@ -270,7 +271,7 @@ async def _estimate_price(title: str, desc: str) -> float:
         price_str = "".join(c for c in price_str if c.isdigit() or c == ".")
         return float(price_str)
     except (ValueError, TypeError) as e:
-        logger.error("Failed to parse price estimation: %s", str(e))
+        logger.error("Failed to parse price estimation: %s", traceback.format_exc())
         return 0.0
 
 
@@ -298,7 +299,7 @@ async def _post_listing(
             logger.info("Successfully posted listing with ID: %s", listing_id)
             return listing_id
         except Exception as e:
-            logger.error("Failed to post listing: %s", str(e))
+            logger.error("Failed to post listing: %s", traceback.format_exc())
             raise
 
 
@@ -553,7 +554,7 @@ async def negotiate(
         return NegotiationResponse(reply=response, status=status)
 
     except Exception as e:
-        logger.error("Failed to process negotiation: %s", str(e))
+        logger.error("Failed to process negotiation: %s", traceback.format_exc())
         raise HTTPException(500, "Failed to process negotiation message")
 
 
@@ -565,7 +566,7 @@ async def wipe_all_data(token: str = Depends(verify_token)):
         await redis_pool.flushdb()
         return {"status": "success", "message": "All Redis data wiped"}
     except Exception as e:
-        logger.error("Failed to wipe Redis data: %s", str(e))
+        logger.error("Failed to wipe Redis data: %s", traceback.format_exc())
         raise HTTPException(500, "Failed to wipe Redis data")
 
 
@@ -581,7 +582,7 @@ async def health():
         await redis_pool.ping()
         redis_ok = True
     except Exception as e:
-        logger.error("Redis health check failed: %s", str(e))
+        logger.error("Redis health check failed: %s", traceback.format_exc())
 
     return HealthResponse(
         status="healthy" if redis_ok else "degraded",
@@ -624,6 +625,9 @@ async def run_marktplaats_loop():
                         try:
                             chats = (await automation.read_messages())["chats"]
                             for chat in chats:
+                                # here is the important processing of stuff
+                                # we need to identify what user this is - by the title of the item
+                                # and then use some random method ala negotiate to talk
                                 if (
                                     chat["messages"]
                                     and chat["messages"][-1]["side"] != "me"
@@ -634,12 +638,14 @@ async def run_marktplaats_loop():
                                     logger.info(f"Sending a mirrored message: {resp}")
                                     await automation.send_message(chat["id"], resp)
                         except Exception as e:
-                            logger.error(f"Error in message loop: {str(e)}")
+                            logger.error(
+                                f"Error in message loop: {traceback.format_exc()}"
+                            )
                         await asyncio.sleep(5)
                 else:
                     logger.error("Failed to log in to Marktplaats")
         except Exception as e:
-            logger.error(f"Error in Marktplaats automation: {str(e)}")
+            logger.error(f"Error in Marktplaats automation: {traceback.format_exc()}")
 
         # If we get here, something went wrong, wait before retrying
         await asyncio.sleep(60)
