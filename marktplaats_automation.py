@@ -701,6 +701,12 @@ class MarktplaatsAutomation:
 
                         if description_frame:
                             # We need to fill the tinymce body
+
+                            stuff = (
+                                await self.page.frame_locator("iframe")
+                                .locator("*")
+                                .all()
+                            )
                             breakpoint()
                             editor_body = description_frame.locator("body#tinymce")
 
